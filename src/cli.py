@@ -23,6 +23,7 @@ def run_tests():
     group.add_argument("--browser-query", action="store_true", help="Query and list current reports and available receipts via browser automation")
     group.add_argument("--browser-create", action="store_true", help="Run the browser automation to create a draft report headlessly")
     group.add_argument("--browser-create-headed", action="store_true", help="Run the browser automation to create a draft report in a headed browser (visible)")
+    group.add_argument("--browser-delete", type=str, help="Delete an expense report by name using browser automation")
 
     args = parser.parse_args()
 
@@ -199,6 +200,25 @@ def run_tests():
             print(f"\n[ERROR] Browser automation failed:")
             print(f"        {str(e)}")
             print("        Screenshots on failure are saved in the 'screenshots' folder.")
+            print("=" * 60)
+            sys.exit(1)
+
+    # ----------------------------------------------------
+    # Flow E: Browser Delete Report
+    # ----------------------------------------------------
+    elif args.browser_delete:
+        report_name = args.browser_delete
+        print("=" * 60)
+        print(f"     SAP Concur Browser-Based Delete Report: '{report_name}'")
+        print("=" * 60)
+        
+        try:
+            browser_client = ConcurBrowserClient()
+            browser_client.delete_report(name=report_name, headless=True)
+            print(f"\n[SUCCESS] Successfully deleted report: '{report_name}'")
+            print("=" * 60)
+        except Exception as e:
+            print(f"\n[ERROR] Failed to delete report: {str(e)}")
             print("=" * 60)
             sys.exit(1)
 

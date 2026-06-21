@@ -17,6 +17,7 @@ usage() {
     echo "  browser-query         Run Playwright query to list current reports and receipts (requires session)"
     echo "  browser-create        Run Playwright automation to create a draft report headlessly"
     echo "  browser-create-headed Run Playwright automation to create a draft report visibly (headed)"
+    echo "  browser-delete \"Name\"  Run Playwright to delete a specific report by name"
     exit 1
 }
 
@@ -93,6 +94,16 @@ case "$CMD" in
         echo "=== Running headed browser report creation ==="
         ensure_venv
         python3 src/cli.py --browser-create-headed
+        ;;
+    browser-delete)
+        if [ $# -lt 2 ]; then
+            echo "Error: Please specify the report name to delete."
+            echo "Usage: ./run.sh browser-delete \"Report Name\""
+            exit 1
+        fi
+        echo "=== Deleting report via browser ==="
+        ensure_venv
+        python3 src/cli.py --browser-delete "$2"
         ;;
     *)
         usage
