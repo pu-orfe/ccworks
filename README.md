@@ -256,6 +256,16 @@ If you use Pi within this repository, it will automatically discover the extensi
 
 ---
 
+## ⚙️ CI/CD Pipeline
+
+This project includes a fully automated **GitHub Actions CI/CD Pipeline** defined in `.github/workflows/ci.yml`. On every push and pull request to the `main` branch, it runs:
+
+1. **Host-Based Unit Tests**: Runs mock API tests directly on the runner.
+2. **Containerized Unit Tests**: Builds and executes mock unit tests inside a Docker container using `docker-compose`.
+3. **End-to-End Browser Smoke Tests**: Launches a stateful mock server and runs headless Playwright CRUD browser automation tests.
+
+---
+
 ## 🔒 Handling Multi-Factor Authentication (MFA) & SSO in Browser Mode
 
 Modern enterprise security often requires MFA or SSO login screens that standard automation cannot programmatically bypass. This project handles this using a **Session State Preservation** strategy:
@@ -274,6 +284,9 @@ Modern enterprise security often requires MFA or SSO login screens that standard
 ## 📂 Project Directory Structure
 
 ```
+├── .github/
+│   └── workflows/
+│       └── ci.yml          # GitHub Actions CI/CD workflow configuration
 ├── Dockerfile              # Docker container definition
 ├── docker-compose.yml      # Service orchestration for testing
 ├── requirements.txt        # Third-party Python dependencies
