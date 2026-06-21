@@ -179,4 +179,121 @@ export default function (pi: ExtensionAPI) {
       };
     }
   });
+
+  // 6. Tool: concur_create_report
+  pi.registerTool({
+    name: "concur_create_report",
+    label: "Create Draft Report",
+    description: "Creates a new draft expense report headlessly.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Name of the expense report to create" }),
+      purpose: Type.Optional(Type.String({ description: "Business purpose of the report" })),
+      comment: Type.Optional(Type.String({ description: "Optional comment or description for the report" }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const args = ["browser-create"];
+      if (params.name) args.push(params.name);
+      if (params.purpose) args.push(params.purpose);
+      if (params.comment) args.push(params.comment);
+      
+      const output = await runCommand(args);
+      return {
+        content: [{ type: "text", text: output }],
+        details: {}
+      };
+    }
+  });
+
+  // 7. Tool: concur_delete_report
+  pi.registerTool({
+    name: "concur_delete_report",
+    label: "Delete Draft Report",
+    description: "Deletes a draft expense report by name.",
+    parameters: Type.Object({
+      report_name: Type.String({ description: "The exact name of the draft report to delete" })
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const output = await runCommand(["browser-delete", params.report_name]);
+      return {
+        content: [{ type: "text", text: output }],
+        details: {}
+      };
+    }
+  });
+
+  // 8. Tool: concur_card_transaction_details
+  pi.registerTool({
+    name: "concur_card_transaction_details",
+    label: "Get Card Transaction Details",
+    description: "Fetches details of a specific credit card transaction by merchant or ID.",
+    parameters: Type.Object({
+      merchant_or_id: Type.String({ description: "Merchant name or transaction ID to look up (e.g., 'Uber', 'TX_5002')" }),
+      filter_view: Type.Optional(Type.String({
+        description: "Dropdown filter to look inside (e.g., 'All Corporate and Personal Cards', 'All Purchasing Cards')",
+        default: "All Corporate and Personal Cards"
+      }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const filter = params.filter_view || "All Corporate and Personal Cards";
+      const output = await runCommand(["browser-card-details", params.merchant_or_id, filter]);
+      return {
+        content: [{ type: "text", text: output }],
+        details: {}
+      };
+    }
+  });
+
+  // 9. Tool: concur_add_delegate
+  pi.registerTool({
+    name: "concur_add_delegate",
+    label: "Add Expense Delegate",
+    description: "Adds a new expense delegate in settings with specified permissions.",
+    parameters: Type.Object({
+      name_or_email: Type.String({ description: "Full name or email address of the delegate to add" }),
+      permissions: Type.Optional(Type.Array(Type.String(), {
+        description: "List of permissions to assign (e.g. ['prepare', 'submit', 'approve'])",
+        default: ["prepare"]
+      }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const perms = params.permissions || ["prepare"];
+      const output = await runCommand(["browser-add-delegate", params.name_or_email, ...perms]);
+      return {
+        content: [{ type: "text", text: output }],
+        details: {}
+      };
+    }
+  });
+
+  // 10. Tool: concur_remove_delegate
+  pi.registerTool({
+    name: "concur_remove_delegate",
+    label: "Remove Expense Delegate",
+    description: "Removes an expense delegate from settings by name or email.",
+    parameters: Type.Object({
+      name_or_email: Type.String({ description: "Full name or email address of the delegate to remove" })
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const output = await runCommand(["browser-remove-delegate", params.name_or_email]);
+      return {
+        content: [{ type: "text", text: output }],
+        details: {}
+      };
+    }
+  });
+
+  // 11. Tool: concur_nuke_drafts_and_receipts
+  pi.registerTool({
+    name: "concur_nuke_drafts_and_receipts",
+    label: "Nuke Drafts and Receipts",
+    description: "Deletes all draft reports and available receipts inside Concur (intended for testing cleanup).",
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const output = await runCommand(["browser-nuke"]);
+      return {
+        content: [{ type: "text", text: output }],
+        details: {}
+      };
+    }
+  });
 }

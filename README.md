@@ -226,6 +226,12 @@ The extension is written in TypeScript and is saved at `.pi/extensions/concur.ts
 3. **`concur_list_card_transactions(filter_view)`**: Lists card transactions from Available Expenses.
 4. **`concur_reconcile_report(report_name, rules, submit)`**: Automatically reconciles transactions using JSON rules, and optionally submits the report (default: `submit` is false, leaving it in draft mode for review).
 5. **`concur_attach_receipt(report_name, merchant, receipt_path)`**: Uploads and attaches a local receipt file to an expense.
+6. **`concur_create_report(name, purpose, comment)`**: Creates a new draft expense report headlessly.
+7. **`concur_delete_report(report_name)`**: Deletes a draft expense report by name.
+8. **`concur_card_transaction_details(merchant_or_id, filter_view)`**: Fetches details of a specific credit card transaction by merchant or ID.
+9. **`concur_add_delegate(name_or_email, permissions)`**: Adds a new expense delegate in settings with specified permissions.
+10. **`concur_remove_delegate(name_or_email)`**: Removes an expense delegate from settings by name or email.
+11. **`concur_nuke_drafts_and_receipts()`**: Deletes all draft reports and available receipts inside Concur (intended for testing cleanup).
 
 ### How to Enable
 

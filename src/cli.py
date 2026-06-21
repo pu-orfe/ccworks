@@ -43,6 +43,9 @@ def run_tests():
     parser.add_argument("--merchant", type=str, help="Merchant name or transaction ID to match receipt against")
     parser.add_argument("--receipt-path", type=str, help="Local file path of the receipt (PDF or image)")
     parser.add_argument("--submit", action="store_true", help="Submit the report after reconciling (default: False, review-only)")
+    parser.add_argument("--name", type=str, help="Name of report to create")
+    parser.add_argument("--purpose", type=str, help="Business purpose of report to create")
+    parser.add_argument("--comment", type=str, help="Additional comment for report to create")
 
     args = parser.parse_args()
 
@@ -198,9 +201,9 @@ def run_tests():
         print("=" * 60)
         
         headless = not args.browser_create_headed
-        report_name = f"Browser Test Draft {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        purpose = "Validating browser-based creation of draft reports"
-        comment = "Created automatically via SAP Concur Python Playwright Tester"
+        report_name = args.name or f"Browser Test Draft {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        purpose = args.purpose or "Validating browser-based creation of draft reports"
+        comment = args.comment or "Created automatically via SAP Concur Python Playwright Tester"
 
         try:
             browser_client = ConcurBrowserClient()

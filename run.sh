@@ -111,12 +111,32 @@ case "$CMD" in
     browser-create)
         echo "=== Running headless browser report creation ==="
         ensure_venv
-        python3 src/cli.py --browser-create
+        ARGS=()
+        if [ $# -ge 2 ]; then
+            ARGS+=("--name" "$2")
+        fi
+        if [ $# -ge 3 ]; then
+            ARGS+=("--purpose" "$3")
+        fi
+        if [ $# -ge 4 ]; then
+            ARGS+=("--comment" "$4")
+        fi
+        python3 src/cli.py --browser-create "${ARGS[@]}"
         ;;
     browser-create-headed)
         echo "=== Running headed browser report creation ==="
         ensure_venv
-        python3 src/cli.py --browser-create-headed
+        ARGS=()
+        if [ $# -ge 2 ]; then
+            ARGS+=("--name" "$2")
+        fi
+        if [ $# -ge 3 ]; then
+            ARGS+=("--purpose" "$3")
+        fi
+        if [ $# -ge 4 ]; then
+            ARGS+=("--comment" "$4")
+        fi
+        python3 src/cli.py --browser-create-headed "${ARGS[@]}"
         ;;
     browser-delete)
         if [ $# -lt 2 ]; then
