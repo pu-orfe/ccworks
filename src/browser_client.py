@@ -37,13 +37,11 @@ class ConcurBrowserClient:
         """Helper to wait for Concur's dynamic SPA dashboard elements to load."""
         logger.info("Waiting for Concur dashboard to render (handling loading spinners)...")
         try:
-            # Wait for standard load state
             page.wait_for_load_state("load", timeout=15000)
         except Exception:
             pass
 
         # Combined selectors representing that the dashboard loading is complete
-        # (Either reports list empty state, any report card, or the create report buttons)
         combined_selectors = [
             "#create-report-btn",
             "button:has-text('Create New Report')",
@@ -52,6 +50,7 @@ class ConcurBrowserClient:
             "span:has-text('Create Expense Report')",
             ".no-reports",
             ".report-card",
+            ".report-tile",
             ".cnqr-report-card",
             ".sapMCard",
             "h2:has-text('Available Receipts')"
@@ -59,7 +58,6 @@ class ConcurBrowserClient:
         combined_str = ", ".join(combined_selectors)
 
         try:
-            # Generous 30 second timeout for the dynamic components
             page.locator(combined_str).first.wait_for(state="visible", timeout=30000)
             logger.info("Dashboard components loaded and visible.")
         except Exception as e:
@@ -283,7 +281,7 @@ class ConcurBrowserClient:
                     return []
 
                 # Selector options to locate report containers (supports Mock UI and standard Concur UIs)
-                card_selectors = [".report-card", ".cnqr-report-card", ".sapMCard"]
+                card_selectors = [".report-tile", ".report-card", ".cnqr-report-card", ".sapMCard"]
                 cards = None
                 for selector in card_selectors:
                     loc = page.locator(selector)
@@ -302,7 +300,14 @@ class ConcurBrowserClient:
                     card = cards.nth(i)
                     
                     # Extract Name
-                    name_selectors = [".report-name", ".cnqr-report-name", ".sapMObjLTitle", "h3"]
+                    name_selectors = [
+                        ".report-tile__header__text",
+                        ".report-name",
+                        ".cnqr-report-name",
+                        ".sapMObjLTitle",
+                        "h3",
+                        "strong"
+                    ]
                     name = "Unknown Report"
                     for ns in name_selectors:
                         sub = card.locator(ns)
@@ -311,7 +316,11 @@ class ConcurBrowserClient:
                             break
 
                     # Extract Purpose / Info
-                    purpose_selectors = [".report-purpose", ".sapMObjLDescription", "p"]
+                    purpose_selectors = [
+                        ".report-purpose",
+                        ".sapMObjLDescription",
+                        "p"
+                    ]
                     purpose = ""
                     for ps in purpose_selectors:
                         sub = card.locator(ps)
@@ -356,7 +365,7 @@ class ConcurBrowserClient:
                 self._take_screenshot(page, "update_report_pre")
 
                 # Find the card containing the old name
-                card = page.locator(".report-card").filter(has_text=old_name)
+                card = page.locator(".report-tile, .report-card").filter(has_text=old_name)
                 if card.count() == 0:
                     card = page.locator(".sapMCard, .sapMLIB").filter(has_text=old_name)
                 
@@ -420,7 +429,7 @@ class ConcurBrowserClient:
                 self._take_screenshot(page, "delete_report_pre")
 
                 # Find target report card
-                card = page.locator(".report-card").filter(has_text=name)
+                card = page.locator(".report-tile, .report-card").filter(has_text=name)
                 if card.count() == 0:
                     card = page.locator(".sapMCard, .sapMLIB").filter(has_text=name)
 
@@ -467,30 +476,57 @@ class ConcurBrowserClient:
                 self._wait_for_dashboard(page)
                 self._take_screenshot(page, "list_receipts_dashboard")
 
-                # Selector for thumbnails (try most specific class first)
-                thumb_selectors = [".receipt-name", ".available-receipt-thumbnail", "[class*='receipt']"]
-                thumbnails = None
-                for sel in thumb_selectors:
-                    loc = page.locator(sel)
-                    if loc.count() > 0:
-                        thumbnails = loc
-                        break
+                # Locate specific receipt grid items to avoid instructions and loading skeletons
+                items = page.locator(".receipt-grid-item")
+                count = items.count()
+                
+                # Fallback to general thumbnails if specific classes are not found (e.g. in mock server)
+                if count == 0:
+                    items = page.locator(".available-receipt-thumbnail")
+                    count = items.count()
 
-                if thumbnails:
-                    count = thumbnails.count()
-                    for i in range(count):
-                        txt = thumbnails.nth(i).text_content().strip()
-                        if "\n" in txt:
-                            txt = txt.split("\n")[-1].strip()
-                        if txt:
-                            receipts.append(txt)
-                            logger.info(f"  Receipt {i+1}: {txt}")
+                logger.info(f"Discovered {count} available receipt card(s) on page.")
+
+                for i in range(count):
+                    item = items.nth(i)
+                    
+                    # Try to extract the title/name of the receipt
+                    name = ""
+                    name_selectors = [
+                        ".receipt-grid-item__header__text.receipt-grid-item__header--bold",
+                        ".receipt-grid-item__header__text",
+                        ".receipt-name"
+                    ]
+                    for ns in name_selectors:
+                        sub = item.locator(ns)
+                        if sub.count() > 0:
+                            name = sub.first.text_content().strip()
+                            break
+                    
+                    if not name:
+                        # Fallback to stripping the text content of the item directly
+                        name = item.text_content().strip()
+                        if "\n" in name:
+                            name = name.split("\n")[-1].strip()
+
+                    # Clean up layout text and skeletons
+                    if name:
+                        name = name.replace("\n", " ").strip()
+                    
+                    if (name and 
+                        "loading" not in name.lower() and 
+                        "drag and drop" not in name.lower() and 
+                        "valid file types" not in name.lower() and
+                        "available receipts" not in name.lower() and
+                        "upload new receipt" not in name.lower()):
+                        receipts.append(name)
+                        logger.info(f"  Receipt {i+1}: {name}")
 
             except Exception as e:
                 logger.error(f"Error listing receipts: {str(e)}")
             finally:
                 browser.close()
-            return list(set(receipts))  # Remove duplicates
+            return list(set(receipts))
 
     def delete_available_receipt(self, receipt_name: str, headless: bool = True) -> Dict[str, Any]:
         """
@@ -510,20 +546,21 @@ class ConcurBrowserClient:
 
                 # Find the receipt thumbnail
                 thumb_selectors = [
-                    ".available-receipt-thumbnail",
-                    ".available-receipt-card",
-                    ".receipt-thumbnail",
-                    ".cnqr-receipt-card",
-                    "[class*='receipt']"
+                    lambda p: p.locator(".receipt-grid-item").filter(has_text=receipt_name),
+                    lambda p: p.locator(".available-receipt-thumbnail").filter(has_text=receipt_name),
+                    lambda p: p.locator("[class*='receipt']").filter(has_text=receipt_name)
                 ]
 
                 thumbnail = None
-                for selector in thumb_selectors:
-                    loc = page.locator(selector).filter(has_text=receipt_name)
-                    if loc.count() > 0:
-                        thumbnail = loc.first
-                        logger.info(f"Found receipt thumbnail using selector '{selector}'.")
-                        break
+                for get_sel in thumb_selectors:
+                    try:
+                        loc = get_sel(page)
+                        if loc.count() > 0:
+                            thumbnail = loc.first
+                            logger.info("Found receipt thumbnail to delete.")
+                            break
+                    except Exception:
+                        continue
 
                 if not thumbnail:
                     raise FileNotFoundError(f"No available receipt named '{receipt_name}' found.")
