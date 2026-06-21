@@ -1,0 +1,19 @@
+# Python environment and cache files
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Local configuration and credentials
+.env
+
+# Session token storage (cookies and local storage state)
+concur_session.json
+concur_session_mock.json
+
+# Screen captures on test completion or failure
+screenshots/
+
+# System files
+.DS_Store

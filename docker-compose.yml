@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  unit-tests:
+    build: .
+    container_name: concur-unit-tests
+    # Runs the unit tests with mocks (no internet / API keys required)
+
+  integration-tester:
+    build: .
+    container_name: concur-integration-tester
+    entrypoint: ["python", "src/cli.py"]
+    # Mounts .env file from host to inject actual SAP Concur credentials
+    volumes:
+      - ./.env:/app/.env
