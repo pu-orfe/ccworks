@@ -31,6 +31,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Set up docker-compose compatibility symlink
+      run: |
+        if ! command -v docker-compose &> /dev/null; then
+          sudo ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+        fi
+
     - name: Build and run tests via Docker Compose
       run: |
         docker-compose build unit-tests
