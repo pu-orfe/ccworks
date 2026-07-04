@@ -106,5 +106,23 @@ class TestJustificationAndClassification(unittest.TestCase):
         self.assertEqual(tx["business_purpose"], target_purpose)
         self.assertEqual(tx["comment"], target_comment)
 
+    def test_03_transaction_update_verification_failure(self):
+        """Test that update fails correctly when field update fails to stick (e.g. invalid type)."""
+        report_name = "Verification Failure Test"
+        self.client.create_draft_report(name=report_name)
+        
+        # Update with an invalid type not in the select options
+        res = self.client.update_report_transaction(
+            report_name=report_name,
+            transaction_indices=1,
+            expense_type="Nonexistent Type",
+            headless=True
+        )
+        
+        # Since "Nonexistent Type" is not a valid option, selecting it will fail,
+        # and success should be False.
+        self.assertFalse(res["results"][0]["success"])
+        self.assertFalse(res["success"])
+
 if __name__ == "__main__":
     unittest.main()

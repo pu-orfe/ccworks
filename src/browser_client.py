@@ -903,8 +903,10 @@ class ConcurBrowserClient:
                                             if tag in ["input", "textarea", "select"]:
                                                 current_val = inp_type.input_value()
                                                 if expense_type.lower() not in current_val.lower():
-                                                    logger.warning(f"  [{current_idx}] Warning: Expense type value '{current_val}' may not have updated correctly.")
+                                                    raise ValueError(f"Expense type verification failed: expected '{expense_type}', got '{current_val}'")
                                         except Exception as verify_e:
+                                            if isinstance(verify_e, ValueError):
+                                                raise verify_e
                                             logger.warning(f"  [{current_idx}] Could not verify if updated value stuck: {verify_e}")
                                     
                                     # Increment only when successful
@@ -918,6 +920,15 @@ class ConcurBrowserClient:
                                     try:
                                          inp_type.fill(expense_type)
                                          logger.info(f"  [{current_idx}] Updated expense type via broad fallback")
+                                         # Verify broad fallback stuck
+                                         try:
+                                             current_val = inp_type.input_value()
+                                             if expense_type.lower() not in current_val.lower():
+                                                 raise ValueError(f"Expense type broad fallback verification failed: expected '{expense_type}', got '{current_val}'")
+                                         except Exception as verify_e:
+                                             if isinstance(verify_e, ValueError):
+                                                 raise verify_e
+                                             logger.warning(f"  [{current_idx}] Could not verify broad fallback expense type value: {verify_e}")
                                          updates_found += 1
                                     except Exception as type_e:
                                          logger.error(f"  [{current_idx}] Failed to update expense type via broad fallback: {type_e}")
@@ -929,9 +940,21 @@ class ConcurBrowserClient:
                             # Use provided HTML attributes for business purpose - SCOPED to detail pane
                             inp_purpose = detail_pane.locator("input#businessPurpose, [data-nuiexp='field-businessPurpose'], input[id*='purpose'], textarea[id*='purpose']").first
                             if inp_purpose.count() > 0:
-                                inp_purpose.fill(business_purpose)
-                                logger.info(f"  [{current_idx}] Updated business purpose")
-                                updates_found += 1
+                                try:
+                                    inp_purpose.fill(business_purpose)
+                                    logger.info(f"  [{current_idx}] Updated business purpose")
+                                    # Verify business purpose stuck
+                                    try:
+                                        current_purpose = inp_purpose.input_value()
+                                        if business_purpose.lower() not in current_purpose.lower():
+                                            raise ValueError(f"Business purpose verification failed: expected '{business_purpose}', got '{current_purpose}'")
+                                    except Exception as verify_e:
+                                        if isinstance(verify_e, ValueError):
+                                            raise verify_e
+                                        logger.warning(f"  [{current_idx}] Could not verify if updated business purpose stuck: {verify_e}")
+                                    updates_found += 1
+                                except Exception as purpose_e:
+                                    logger.error(f"  [{current_idx}] Failed to update business purpose: {purpose_e}")
                             else:
                                 logger.warning(f"  [{current_idx}] Could not find Business Purpose field in detail pane")
 
@@ -940,9 +963,23 @@ class ConcurBrowserClient:
                             # Use provided HTML attributes for comment - SCOPED to detail pane
                             inp_comment = detail_pane.locator("textarea#comment, [data-nuiexp='field-comment'], textarea[id*='comment'], input[id*='comment']").first
                             if inp_comment.count() > 0:
-                                inp_comment.fill(comment)
-                                logger.info(f"  [{current_idx}] Updated comment")
-                                updates_found += 1
+                                try:
+                                    inp_comment.fill(comment)
+                                    logger.info(f"  [{current_idx}] Updated comment")
+                                    # Verify comment stuck
+                                    try:
+                                        current_comment = inp_comment.input_value()
+                                        if comment.lower() not in current_comment.lower():
+                                            raise ValueError(f"Comment verification failed: expected '{comment}', got '{current_comment}'")
+                                    except Exception as verify_e:
+                                        if isinstance(verify_e, ValueError):
+                                            raise verify_e
+                                        logger.warning(f"  [{current_idx}] Could not verify if updated comment stuck: {verify_e}")
+                                    updates_found += 1
+                                except Exception as comment_e:
+                                    logger.error(f"  [{current_idx}] Failed to update comment: {comment_e}")
+                            else:
+                                logger.warning(f"  [{current_idx}] Could not find Comment field in detail pane")
 
                         # Save the changes
                         save_btn_selectors = [
@@ -1881,7 +1918,8 @@ class ConcurBrowserClient:
                             clicked_back = False
                             
                             # Prioritize clicking back/cancel INSIDE the side panel or detail pane
-                            detail_pane = page.locator("#sapcnqr-layout-side-panel-elements, .sapcnqr-layout-side-panel__elements, .ere__dynamic-main-content").filter(visible=True).first
+                            detail_pane_sel = "#sapcnqr-layout-side-panel-elements, .sapcnqr-layout-side-panel__elements, .ere__dynamic-main-content, [data-nuiexp*='panel'], [class*='side-panel'], [class*='detail-pane'], [class*='details-pane']"
+                            detail_pane = page.locator(detail_pane_sel).filter(visible=True).first
                             if detail_pane.count() > 0:
                                 pane_back_selectors = [
                                     "button:has-text('Cancel')",
@@ -1890,7 +1928,13 @@ class ConcurBrowserClient:
                                     ".sapMBtn:has-text('Back')",
                                     "[data-nuiexp*='cancel']",
                                     "[data-nuiexp*='back']",
-                                    ".sapcnqr-icon--nav-back"
+                                    ".sapcnqr-icon--nav-back",
+                                    "button:has-text('Close')",
+                                    ".sapMBtn:has-text('Close')",
+                                    "button[title*='Close']",
+                                    "button[aria-label*='Close']",
+                                    "[class*='close']",
+                                    "[class*='cancel']"
                                 ]
                                 for sel in pane_back_selectors:
                                     btn = detail_pane.locator(sel).first
@@ -1900,27 +1944,37 @@ class ConcurBrowserClient:
                                         btn.click(force=True)
                                         clicked_back = True
                                         break
+                                
+                                if not clicked_back:
+                                    logger.warning("  Detail pane is visible but no back/cancel button found inside. Attempting Escape...")
+                                    self._dismiss_modals(page)
+                                    page.keyboard.press("Escape")
+                                    page.wait_for_timeout(2000)
+                                    # If detail pane is now gone, consider back navigation successful
+                                    if page.locator(detail_pane_sel).filter(visible=True).count() == 0:
+                                        clicked_back = True
                                         
                             if not clicked_back:
-                                # Fallback to page-level selectors
-                                page_back_selectors = [
-                                    ".sapcnqr-icon--nav-back",
-                                    "[data-nuiexp='exit-full-screen-button']",
-                                    ".sapMBtnBack",
-                                    "button[title*='Back']",
-                                    "button[aria-label*='Back']",
-                                    "button[id*='back']",
-                                    "button:has-text('Cancel')",
-                                    "button:has-text('Back')"
-                                ]
-                                for sel in page_back_selectors:
-                                    btn = page.locator(sel).first
-                                    if btn.count() > 0 and btn.is_visible():
-                                        logger.info(f"  Clicking back/cancel button using page-level selector: {sel}")
-                                        self._dismiss_modals(page)
-                                        btn.click(force=True)
-                                        clicked_back = True
-                                        break
+                                # Fallback to page-level selectors ONLY if detail pane is not visible
+                                if page.locator(detail_pane_sel).filter(visible=True).count() == 0:
+                                    page_back_selectors = [
+                                        ".sapcnqr-icon--nav-back",
+                                        "[data-nuiexp='exit-full-screen-button']",
+                                        ".sapMBtnBack",
+                                        "button[title*='Back']",
+                                        "button[aria-label*='Back']",
+                                        "button[id*='back']",
+                                        "button:has-text('Cancel')",
+                                        "button:has-text('Back')"
+                                    ]
+                                    for sel in page_back_selectors:
+                                        btn = page.locator(sel).first
+                                        if btn.count() > 0 and btn.is_visible():
+                                            logger.info(f"  Clicking back/cancel button using page-level selector: {sel}")
+                                            self._dismiss_modals(page)
+                                            btn.click(force=True)
+                                            clicked_back = True
+                                            break
 
                             # Wait and VERIFY we are back in the list, NOT the dashboard
                             if clicked_back:
