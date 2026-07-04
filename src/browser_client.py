@@ -929,38 +929,35 @@ class ConcurBrowserClient:
                                     # Type with delay to trigger suggestions
                                     page.keyboard.type(expense_type, delay=100)
                                     # Wait for suggestions to appear
-                                    page.wait_for_timeout(2500)
+                                    page.wait_for_timeout(3000)
                                     
                                     # Look for the matching item in the dropdown list (Fiori specific)
-                                    # Use a broader selector for the list items
                                     list_item = page.locator(".sapMStandardListItem, .sapMLIB, [role='listitem'], .sapMComboBoxBaseItem, .suggestion-item, .sapMSelectListItem, .sapMListUl li").filter(has_text=re.compile(f"^{re.escape(expense_type)}$", re.I)).first
+                                    
                                     if list_item.count() > 0 and list_item.is_visible():
                                         list_item.click(force=True)
                                         logger.info(f"  [{current_idx}] Selected matching item from dropdown list")
-                                        page.wait_for_timeout(1000)
-                                        
-                                        # VERIFY IT STUCK
-                                        val_after = inp_type.text_content() or ""
-                                        if expense_type.lower() not in val_after.lower():
-                                            logger.warning(f"  [{current_idx}] Warning: Selection might not have stuck. Current text: '{val_after.strip()}'")
-                                        
-                                        self._take_screenshot(page, f"transaction_{current_idx}_after_type_selection")
-                                        updates_found += 1
                                     else:
-                                        # Try a partial match if exact fails
-                                        list_item = page.locator(".sapMStandardListItem, [role='listitem'], .sapMComboBoxBaseItem").filter(has_text=re.compile(re.escape(expense_type), re.I)).first
-                                        if list_item.count() > 0 and list_item.is_visible():
-                                            list_item.click(force=True)
-                                            logger.info(f"  [{current_idx}] Selected partial matching item from dropdown list")
-                                            page.wait_for_timeout(1000)
-                                            self._take_screenshot(page, f"transaction_{current_idx}_after_type_selection_partial")
-                                            updates_found += 1
-                                        else:
-                                            page.keyboard.press("Enter")
-                                            logger.info(f"  [{current_idx}] No list match, used Enter")
-                                            page.wait_for_timeout(1000)
-                                            self._take_screenshot(page, f"transaction_{current_idx}_after_type_enter")
-                                            updates_found += 1
+                                        # Native fallback: ArrowDown and Enter
+                                        logger.info(f"  [{current_idx}] No list match found, using ArrowDown + Enter")
+                                        page.keyboard.press("ArrowDown")
+                                        page.wait_for_timeout(500)
+                                        page.keyboard.press("Enter")
+                                    
+                                    page.wait_for_timeout(1000)
+                                    # CRITICAL: Press Tab to blur and trigger validation
+                                    page.keyboard.press("Tab")
+                                    page.wait_for_timeout(1000)
+                                    
+                                    # VERIFY IT STUCK visually/via text
+                                    val_after = inp_type.text_content() or ""
+                                    if expense_type.lower() not in val_after.lower():
+                                        logger.warning(f"  [{current_idx}] Warning: Selection might not have stuck. Current text: '{val_after.strip()}'")
+                                    
+                                    self._take_screenshot(page, f"transaction_{current_idx}_after_type_selection")
+                                    updates_found += 1
+                                except Exception as type_e:
+                                    logger.error(f"  [{current_idx}] Failed to update expense type: {type_e}")
                                     
                                     page.wait_for_timeout(1000)
                                 except Exception as type_e:
