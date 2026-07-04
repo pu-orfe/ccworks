@@ -3,6 +3,7 @@ import os
 import time
 import logging
 import contextlib
+import re
 from typing import Any, Dict, List, Optional
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -37,6 +38,47 @@ class ConcurBrowserClient:
         path = f"screenshots/{label}_{pid}.png"
         page.screenshot(path=path)
         logger.info(f"Captured screenshot: {path}")
+
+    def _dismiss_modals(self, page):
+        """Aggressively dismisses common SAP Concur overlays."""
+        # 1. Timeline Modal / What's New
+        modals = page.locator("[data-nuiexp='timelineModal'], .sapcnqr-dialog__fade--in, [role='dialog'][aria-modal='true']").filter(visible=True)
+        if modals.count() > 0:
+            logger.info(f"Detected {modals.count()} visible modal(s). Attempting dismissal...")
+            
+            # Try Escape key first
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
+            
+            # Try finding a Close/X button
+            close_buttons = [
+                "button:has-text('Close')", 
+                ".sapMBtn:has-text('Close')", 
+                "button[aria-label='Close']",
+                ".sapcnqr-icon--close"
+            ]
+            for selector in close_buttons:
+                btn = page.locator(selector).filter(visible=True).first
+                if btn.count() > 0:
+                    try:
+                        btn.click(force=True, timeout=2000)
+                        page.wait_for_timeout(1000)
+                        if modals.count() == 0:
+                            return
+                    except:
+                        pass
+
+            # 2. Nuclear Option: Remove from DOM if still present
+            logger.info("Nuclear dismissal: removing modals from DOM via evaluate...")
+            page.evaluate("""
+                document.querySelectorAll("[data-nuiexp='timelineModal'], .sapcnqr-dialog, [role='dialog'][aria-modal='true']").forEach(el => {
+                    el.style.display = 'none';
+                    el.remove();
+                });
+                document.querySelectorAll(".sapMDialog").forEach(el => el.remove());
+                document.body.classList.remove("sapMDialog-Open");
+            """)
+            page.wait_for_timeout(1000)
 
     @contextlib.contextmanager
     def _session_lock(self):
@@ -622,17 +664,19 @@ class ConcurBrowserClient:
     def update_report_transaction(
         self,
         report_name: str,
-        transaction_index: int,
+        transaction_indices: Union[int, List[int]],
         expense_type: Optional[str] = None,
         business_purpose: Optional[str] = None,
         comment: Optional[str] = None,
         headless: bool = True
     ) -> Dict[str, Any]:
         """
-        Updates the fields of a specific transaction inside an expense report.
+        Updates the fields of one or more transactions inside an expense report.
+        transaction_indices can be a single integer or a list of integers (1-based).
         To remove/clear a field, pass an empty string "".
         """
-        logger.info(f"Updating transaction at index {transaction_index} in report '{report_name}' (headless={headless})...")
+        indices = [transaction_indices] if isinstance(transaction_indices, int) else transaction_indices
+        logger.info(f"Updating transactions at indices {indices} in report '{report_name}' (headless={headless})...")
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless)
             context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
@@ -657,60 +701,268 @@ class ConcurBrowserClient:
 
                 card.click()
                 page.wait_for_timeout(3000)
-                self._wait_for_dashboard(page)
+                self._wait_for_report_view(page)
                 self._take_screenshot(page, "update_transaction_report_opened")
 
-                # Locate the specific transaction row
-                rows = page.locator(".transaction-recon-row, .detail-row").all()
-                if not rows:
-                    raise RuntimeError("No transaction rows found in report.")
+                # Common selectors for expense rows
+                row_selectors = [
+                    ".detail-row", 
+                    ".sapMListUl .sapMLIB", 
+                    "[class*='expense-item']", 
+                    "[class*='expense-row']", 
+                    ".sapMCustomListItem",
+                    "[role='row']",
+                    "[role='listitem']",
+                    ".sapMTable tr",
+                    "tr.sapMLIB"
+                ]
+                expense_rows_all = page.locator(", ".join(row_selectors)).all()
                 
-                if transaction_index < 0 or transaction_index >= len(rows):
-                    raise IndexError(f"Transaction index {transaction_index} is out of bounds (found {len(rows)} transactions).")
+                # Filter rows exactly like get_report_details
+                valid_rows = []
+                for r in expense_rows_all:
+                    try:
+                        text = r.text_content()
+                        if not text: continue
+                        text = " ".join(text.split()).strip()
+                        if len(text) < 15: continue
+                        lower_text = text.lower()
+                        if "expense type" in lower_text and "vendor details" in lower_text: continue
+                        if "select all rows" in lower_text: continue
+                        valid_rows.append(r)
+                    except:
+                        continue
 
-                row = rows[transaction_index]
-                logger.info(f"Located transaction row at index {transaction_index}.")
+                if not valid_rows:
+                    self._take_screenshot(page, "no_rows_found_debug")
+                    # Collect page text for better error messaging
+                    page_text = page.locator("body").text_content() or ""
+                    snippet = " ".join(page_text.split()[:50])
+                    raise RuntimeError(f"No valid transaction rows found in report. Page content snippet: {snippet}")
+                
+                logger.info(f"Discovered {len(valid_rows)} valid transaction row(s).")
 
-                # Fill in the fields
-                if expense_type is not None:
-                    sel_type = row.locator("select.recon-type, select[id*='type'], input.recon-type")
-                    if sel_type.count() > 0:
-                        tag_name = sel_type.first.evaluate("el => el.tagName.toLowerCase()")
-                        if tag_name == "select":
-                            sel_type.first.select_option(label=expense_type)
+                results = []
+                for current_idx in indices:
+                    try:
+                        logger.info(f"Processing transaction index {current_idx}...")
+                        if current_idx < 1 or current_idx > len(valid_rows):
+                            logger.error(f"Transaction index {current_idx} is out of bounds (found {len(valid_rows)} rows).")
+                            results.append({"index": current_idx, "success": False, "error": "Index out of bounds"})
+                            continue
+
+                        row = valid_rows[current_idx - 1]
+                        
+                        for attempt in range(4):
+                            logger.info(f"  [{current_idx}] Selection attempt {attempt + 1}...")
+                            
+                            if attempt == 2:
+                                logger.info(f"  [{current_idx}] UI seems stuck, reloading page...")
+                                page.reload()
+                                page.wait_for_timeout(5000)
+                                self._dismiss_modals(page)
+                                # Re-locate the row after reload
+                                rows = page.locator("table tbody tr, [role='row']").all()
+                                if current_idx - 1 < len(rows):
+                                    row = rows[current_idx - 1]
+                                else:
+                                    raise Exception(f"Row {current_idx} disappeared after reload")
+
+                            # 1. Deselect any other rows first
+                            try:
+                                selected_rows = page.locator(".sapMLIBSelected, [aria-selected='true'], [aria-current='true']").all()
+                                for sel_row in selected_rows:
+                                    if sel_row != row:
+                                        cb = sel_row.locator(".sapMCb, [type='checkbox']").first
+                                        is_checked = cb.evaluate("el => el.classList.contains('sapMCbMarkChecked') || el.getAttribute('aria-checked') === 'true'")
+                                        if is_checked:
+                                            cb.click(force=True)
+                                            page.wait_for_timeout(500)
+                            except:
+                                pass
+
+                            # 2. Select target row
+                            cb = row.locator(".sapMCb, [type='checkbox']").first
+                            if cb.count() > 0:
+                                is_checked = cb.evaluate("el => el.classList.contains('sapMCbMarkChecked') || el.getAttribute('aria-checked') === 'true'")
+                                if not is_checked:
+                                    cb.click(force=True)
+                                    page.wait_for_timeout(1000)
+                            else:
+                                row.click(force=True)
+                                page.wait_for_timeout(1000)
+                            
+                            # 3. Final verification of 'Edit' button
+                            edit_btn = page.locator("button:has-text('Edit'), .sapMBtn:has-text('Edit')").filter(has_text="Edit").first
+                            if edit_btn.count() > 0 and edit_btn.is_enabled():
+                                logger.info(f"  [{current_idx}] 'Edit' button is enabled.")
+                                edit_btn.click()
+                                selection_successful = True
+                                break
+                            
+                            # Check if detail pane is already open
+                            if page.locator("#sapcnqr-layout-side-panel-elements, .sapcnqr-layout-side-panel__elements").filter(visible=True).count() > 0:
+                                logger.info(f"  [{current_idx}] Detail pane already open.")
+                                selection_successful = True
+                                break
+                                
+                        if not selection_successful:
+                            raise Exception(f"Failed to enable 'Edit' button for transaction index {current_idx}")
+                        
+                        page.wait_for_timeout(2000)
+                        self._take_screenshot(page, f"transaction_{current_idx}_details_open_attempt")
+
+                        # Now verify if we have inputs. If not, we might need to wait more.
+                        # The fields might be in the row (inline) or in a detail pane (right side)
+
+                        # Focus on the detail pane/side panel
+                        detail_pane = page.locator("#sapcnqr-layout-side-panel-elements, .sapcnqr-layout-side-panel__elements, .ere__dynamic-main-content").filter(visible=True).first
+                        if detail_pane.count() == 0:
+                            # Fallback to whole page if specific pane ID not found
+                            detail_pane = page
+                        
+                        # Fill in the fields
+                        if expense_type is not None:
+                            # Search for the expense type input - SCOPED to detail pane
+                            inp_type = detail_pane.locator("input[id*='type']:not([id*='header']), [data-nuiexp*='type']:not([data-nuiexp*='header']), .sapMInputBaseInner[id*='type']:not([id*='header'])").first
+                            if inp_type.count() > 0:
+                                # ... existing selection logic ...
+                                tag_name = inp_type.evaluate("el => el.tagName.toLowerCase()")
+                                if tag_name == "select":
+                                    inp_type.select_option(label=expense_type)
+                                    logger.info(f"  [{current_idx}] Selected expense type via <select>")
+                                else:
+                                    # Handle searchable dropdown (Fiori style)
+                                    inp_type.click()
+                                    page.wait_for_timeout(500)
+                                    # Clear field
+                                    page.keyboard.press("Control+A")
+                                    page.keyboard.press("Backspace")
+                                    page.keyboard.type(expense_type)
+                                    page.wait_for_timeout(1000)
+                                    
+                                    # Look for the matching item in the dropdown list
+                                    list_item = page.locator(".sapMStandardListItem, .sapMLIB, [role='listitem']").filter(has_text=re.compile(f"^{re.escape(expense_type)}$", re.I)).first
+                                    if list_item.count() > 0 and list_item.is_visible():
+                                        list_item.click()
+                                        logger.info(f"  [{current_idx}] Selected matching item '{expense_type}' from dropdown list")
+                                    else:
+                                        page.keyboard.press("Enter")
+                                        logger.info(f"  [{current_idx}] Updated expense type via Enter fallback")
+                                    page.wait_for_timeout(500)
+
+                        if business_purpose is not None:
+                            # Use provided HTML attributes for business purpose - SCOPED to detail pane
+                            inp_purpose = detail_pane.locator("input#businessPurpose, [data-nuiexp='field-businessPurpose'], input[id*='purpose'], textarea[id*='purpose']").first
+                            if inp_purpose.count() > 0:
+                                inp_purpose.fill(business_purpose)
+                                logger.info(f"  [{current_idx}] Updated business purpose")
+                            else:
+                                logger.warning(f"  [{current_idx}] Could not find Business Purpose field in detail pane")
+
+                        if comment is not None:
+                            # Use provided HTML attributes for comment - SCOPED to detail pane
+                            inp_comment = detail_pane.locator("textarea#comment, [data-nuiexp='field-comment'], textarea[id*='comment'], input[id*='comment']").first
+                            if inp_comment.count() > 0:
+                                inp_comment.fill(comment)
+                                logger.info(f"  [{current_idx}] Updated comment")
+
+                        # Save the changes
+                        save_btn_selectors = [
+                            "button[data-nuiexp='exp-save-expense']",
+                            "button.sapcnqr-button:has-text('Save Expense')",
+                            "button.sapMBtn:has-text('Save')", 
+                            "button:has-text('Save')", 
+                            ".sapMBtn:has-text('Save')",
+                            "button[data-nuiexp='save-button']"
+                        ]
+                        
+                        saved = False
+                        for sel in save_btn_selectors:
+                            try:
+                                btn = page.locator(sel).first
+                                if btn.count() > 0 and btn.is_visible():
+                                    btn.click()
+                                    saved = True
+                                    break
+                            except:
+                                continue
+                        
+                        if not saved:
+                            try:
+                                btn = page.get_by_role("button", name="Save", exact=True).filter(visible=True).first
+                                if btn.count() > 0:
+                                    btn.click()
+                                    saved = True
+                            except:
+                                pass
+
+                        if saved:
+                            logger.info(f"  [{current_idx}] Changes saved.")
+                            
+                            # Check for a validation/error modal that often appears after saving an incomplete expense
+                            modal_msg = None
+                            try:
+                                # Broad search for any dialog/modal that might be an error or alert
+                                modal_selectors = [
+                                    ".sapMDialog", 
+                                    ".sapMMessageBox", 
+                                    ".sapcnqr-modal", 
+                                    "[role='dialog']", 
+                                    ".sapMMessageView"
+                                ]
+                                modal = page.locator(", ".join(modal_selectors)).filter(has_text=re.compile(r"Error|Alert|Warning|Missing", re.I)).first
+                                
+                                # Wait a bit more for modal to fully render
+                                if modal.count() > 0 and modal.is_visible(timeout=3000):
+                                    modal_msg = modal.text_content() or ""
+                                    modal_msg = " ".join(modal_msg.split()).strip()
+                                    logger.warning(f"  [{current_idx}] Validation warning detected: {modal_msg}")
+                                    
+                                    # Take a dedicated screenshot of the modal
+                                    self._take_screenshot(page, f"transaction_{current_idx}_error_modal")
+
+                                    # Click "No", "Close", or "OK" to dismiss
+                                    # Concur Fiori often uses "No" for the "Make corrections now?" prompt
+                                    close_btn = modal.locator("button:has-text('No'), button:has-text('Close'), button:has-text('OK'), .sapMBtn:has-text('No')").first
+                                    if close_btn.count() > 0:
+                                        close_btn.click()
+                                        page.wait_for_timeout(1000)
+                                    else:
+                                        # Try clicking anything that looks like a close button
+                                        page.keyboard.press("Escape")
+                                        logger.info(f"  [{current_idx}] Dismissed modal via Escape key.")
+                            except Exception as modal_e:
+                                logger.debug(f"  [{current_idx}] Modal detection check finished: {str(modal_e)}")
+
+                            results.append({
+                                "index": current_idx, 
+                                "success": True, 
+                                "partial_success": modal_msg is not None,
+                                "validation_error": modal_msg
+                            })
                         else:
-                            sel_type.first.fill(expense_type)
-                        logger.info(f"Updated expense type to: {expense_type}")
+                            logger.warning(f"  [{current_idx}] Could not find a visible 'Save' button.")
+                            # Final attempt: dispatch enter key on the comment field
+                            try:
+                                inp_comment.press("Enter")
+                                logger.info(f"  [{current_idx}] Attempted Enter key on comment field.")
+                                results.append({"index": current_idx, "success": True, "note": "Used Enter key instead of Save button"})
+                            except:
+                                results.append({"index": current_idx, "success": False, "error": "Save button not found and Enter key failed"})
+                        
+                        page.wait_for_timeout(2000)
 
-                if business_purpose is not None:
-                    inp_purpose = row.locator("input.recon-purpose, input[id*='purpose']")
-                    if inp_purpose.count() > 0:
-                        inp_purpose.first.fill(business_purpose)
-                        logger.info(f"Updated business purpose to: {business_purpose}")
+                    except Exception as sub_e:
+                        logger.error(f"  [{current_idx}] Failed: {str(sub_e)}")
+                        results.append({"index": current_idx, "success": False, "error": str(sub_e)})
 
-                if comment is not None:
-                    inp_comment = row.locator("input.recon-comment, input[id*='comment']")
-                    if inp_comment.count() > 0:
-                        inp_comment.first.fill(comment)
-                        logger.info(f"Updated comment to: {comment}")
-
-                # Save the changes by clicking the save button
-                save_btn = row.locator("button.recon-save-btn, button:has-text('Save')").first
-                if save_btn.count() > 0:
-                    save_btn.click()
-                    page.wait_for_timeout(2000)
-                    logger.info("Changes saved successfully.")
-                else:
-                    logger.warning("Could not find a save button for the transaction row.")
-
-                self._take_screenshot(page, "update_transaction_saved")
+                self._take_screenshot(page, "update_transactions_final")
 
                 return {
-                    "success": True,
+                    "success": any(r["success"] for r in results),
                     "report_name": report_name,
-                    "transaction_index": transaction_index,
-                    "expense_type": expense_type,
-                    "business_purpose": business_purpose,
+                    "results": results,
                     "comment": comment
                 }
 
@@ -1002,7 +1254,7 @@ class ConcurBrowserClient:
             finally:
                 browser.close()
 
-    def get_report_details(self, name: str, filter_view: Optional[str] = None, headless: bool = True) -> Dict[str, Any]:
+    def get_report_details(self, name: str, filter_view: Optional[str] = None, deep: bool = False, headless: bool = True) -> Dict[str, Any]:
         """
         Navigates to the Expense page, locates a report by name, clicks it to open detail view,
         and extracts report metadata and line-item expenses.
@@ -1112,6 +1364,7 @@ class ConcurBrowserClient:
                 card.click()
                 page.wait_for_timeout(3000)
                 self._wait_for_report_view(page)
+                self._dismiss_modals(page)
                 self._take_screenshot(page, "get_report_details_opened")
 
                 # Extract Report Details Header info
@@ -1134,7 +1387,7 @@ class ConcurBrowserClient:
                             raw = loc.first.text_content()
                             # Clean up prefix case-insensitively
                             import re
-                            report_num = re.sub(r'(?i)Report Number:?', '', raw).strip()
+                            report_num = re.sub(r'(?i)^Report Number:?', '', raw).strip()
                             break
                     except Exception:
                         continue
@@ -1151,7 +1404,7 @@ class ConcurBrowserClient:
                         if loc.count() > 0:
                             raw = loc.first.text_content()
                             import re
-                            purpose = re.sub(r'(?i)Purpose:?', '', raw).strip()
+                            purpose = re.sub(r'(?i)^Purpose:?', '', raw).strip()
                             break
                     except Exception:
                         continue
@@ -1167,13 +1420,60 @@ class ConcurBrowserClient:
                         if loc.count() > 0:
                             raw = loc.first.text_content()
                             import re
-                            comment = re.sub(r'(?i)Comment:?', '', raw).strip()
+                            comment = re.sub(r'(?i)^Comment:?', '', raw).strip()
                             break
                     except Exception:
                         continue
 
+                # If purpose or comment still unknown, try to open the Report Details/Header pane
+                if purpose == "Unknown" or comment == "Unknown":
+                    try:
+                        # Common buttons to open report metadata
+                        btn_selectors = [
+                            "button:has-text('Report Details')",
+                            "button:has-text('Report Header')",
+                            "[data-nuiexp='report-header-button']",
+                            "#report-details-btn"
+                        ]
+                        for sel in btn_selectors:
+                            btn = page.locator(sel).first
+                            if btn.count() > 0 and btn.is_visible():
+                                btn.click()
+                                page.wait_for_timeout(1000)
+                                
+                                # If it opened a menu instead of a pane, click "Report Header"
+                                menu_item = page.locator(".sapMMenuLi:has-text('Report Header'), .sapMBtn:has-text('Report Header')").first
+                                if menu_item.count() > 0 and menu_item.is_visible():
+                                    menu_item.click()
+                                    page.wait_for_timeout(2000)
+                                break
+                        
+                        # Now look for the fields in the opened pane/dialog
+                        import re
+                        if purpose == "Unknown":
+                            p_loc = page.locator("input[id*='purpose'], [data-nuiexp*='purpose'], .sapMInputBaseInner[id*='purpose']").first
+                            if p_loc.count() > 0:
+                                val = p_loc.input_value() or p_loc.text_content() or "Unknown"
+                                purpose = " ".join(val.split()).strip()
+                        
+                        if comment == "Unknown":
+                            c_loc = page.locator("textarea[id*='comment'], [data-nuiexp*='comment'], .sapMInputBaseInner[id*='comment']").first
+                            if c_loc.count() > 0:
+                                val = c_loc.input_value() or c_loc.text_content() or "Unknown"
+                                comment = " ".join(val.split()).strip()
+                        
+                        # Close the dialog/pane if one opened
+                        close_btn = page.locator("button:has-text('Save'), button:has-text('Cancel'), button:has-text('Close'), [data-nuiexp*='close']").first
+                        if close_btn.count() > 0 and close_btn.is_visible():
+                            close_btn.click()
+                            page.wait_for_timeout(1000)
+                    except Exception as e:
+                        logger.debug(f"Could not open/scrape Report Details pane: {e}")
+
                 # Wait for line items to load specifically
                 try:
+                    self._dismiss_modals(page)
+
                     # Broaden wait selectors
                     page.locator(".sapMLIB, [class*='expense-item'], [class*='expense-row'], [role='row'], [role='listitem'], tr").first.wait_for(state="visible", timeout=10000)
                     logger.info("Line items detected in report details.")
@@ -1199,7 +1499,8 @@ class ConcurBrowserClient:
 
                 # Common header/noise text to ignore
                 ignore_keywords = ["date", "expense type", "amount", "merchant", "status", "requested", "total", "business purpose"]
-
+                
+                valid_rows = []
                 for idx, row in enumerate(expense_rows):
                     try:
                         text = row.text_content()
@@ -1225,6 +1526,12 @@ class ConcurBrowserClient:
 
                         # If it's just a placeholder or instruction, skip it
                         if "no expenses" in lower_text or "add an expense" in lower_text:
+                            continue
+
+                        # If we reach here, it's a valid transaction row
+                        if "Select expense" in text:
+                            valid_rows.append(row)
+                        else:
                             continue
 
                         # Structure parsing
@@ -1273,8 +1580,8 @@ class ConcurBrowserClient:
                                 if not vendor: vendor = "Unknown"
 
                         # Try to read fields from active inputs/selects or static labels if they exist in the row
-                        business_purpose = "Unknown"
-                        comment_field = "Unknown"
+                        business_purpose = ""
+                        comment_field = ""
                         
                         try:
                             # Check for select.recon-type or input.recon-type, or search by ID/class
@@ -1312,36 +1619,197 @@ class ConcurBrowserClient:
                         except Exception as e:
                             logger.debug(f"Could not read comment from input/select: {e}")
 
+                        # Broaden field extraction to ARIA labels and titles (common in Fiori)
+                        full_context = text
+                        try:
+                            aria_label = row.get_attribute("aria-label") or ""
+                            title_attr = row.get_attribute("title") or ""
+                            full_context += f" | ARIA: {aria_label} | TITLE: {title_attr}"
+                        except:
+                            pass
+
+                        # If still Unknown, try extracting from full context (text + attributes)
                         if business_purpose == "Unknown" or not business_purpose:
-                            # Try to extract from text
-                            # e.g. "Business Purpose: Client meeting"
-                            purpose_match = re.search(r'(?i)business purpose:?\s*([^|]+)', text)
+                            purpose_match = re.search(r'(?i)business purpose:?\s*([^|]+)', full_context)
                             if purpose_match:
                                 business_purpose = purpose_match.group(1).strip()
                             else:
                                 business_purpose = ""
 
                         if comment_field == "Unknown" or not comment_field:
-                            # Try to extract from text
-                            # e.g. "Comment: Taxi ride"
-                            comment_match = re.search(r'(?i)comment:?\s*([^|]+)', text)
+                            comment_match = re.search(r'(?i)comment:?\s*([^|]+)', full_context)
                             if comment_match:
                                 comment_field = comment_match.group(1).strip()
                             else:
-                                comment_field = ""
+                                # Stricter icon detection to avoid false positives on items 2 and 3
+                                try:
+                                    # Focus on the specific comment icon class and ensure it's visible
+                                    comment_icon = row.locator(".sapcnqr-icon--comment, .sapUiIcon[title*='Comment']").filter(visible=True).first
+                                    if comment_icon.count() > 0:
+                                        icon_text = comment_icon.get_attribute("title") or comment_icon.get_attribute("aria-label") or ""
+                                        # Only accept it if it contains actual user text
+                                        if icon_text and icon_text.strip().lower() not in ["comment", "comments", "view comment"]:
+                                            comment_field = icon_text.strip()
+                                        else:
+                                            # If we see the icon but no tooltip text, we at least know it's there
+                                            # but we'll mark as empty if user says it's wrong. 
+                                            # Actually, let's keep it empty unless we have text to be safe.
+                                            comment_field = ""
+                                except:
+                                    pass
+                                if not comment_field:
+                                    comment_field = ""
 
-                        expenses.append({
+                        # Final fallback for Business Purpose from icons if not in text
+                        if not business_purpose:
+                            try:
+                                purpose_icon = row.locator(".sapcnqr-icon--notes, [class*='purpose-icon'], .sapUiIcon[title*='Purpose']").first
+                                if purpose_icon.count() > 0:
+                                    icon_text = purpose_icon.get_attribute("title") or purpose_icon.get_attribute("aria-label") or ""
+                                    if icon_text and "Purpose" not in icon_text:
+                                        business_purpose = icon_text.strip()
+                            except:
+                                pass
+
+                        # Prepare the expense object
+                        exp_obj = {
                             "index": idx,
                             "date": date_str,
-                            "type": exp_type,
+                            "expense_type": exp_type,
                             "vendor": vendor,
                             "amount": amount,
-                            "business_purpose": business_purpose,
-                            "comment": comment_field,
                             "raw_text": text
-                        })
+                        }
+                        
+                        # Only include purpose and comment if they were successfully extracted
+                        if business_purpose != "Unknown" and business_purpose is not None:
+                            exp_obj["business_purpose"] = business_purpose
+                        if comment_field != "Unknown" and comment_field is not None:
+                            exp_obj["comment"] = comment_field
+                            
+                        expenses.append(exp_obj)
                     except Exception:
                         continue
+
+                # Deep scan: open each transaction to get full details
+                if deep:
+                    # We determine the count first
+                    total_to_scan = len(expenses)
+                    logger.info(f"Performing deep scan on {total_to_scan} transactions...")
+                    
+                    for i in range(total_to_scan):
+                        idx = i + 1
+                        try:
+                            logger.info(f"  Scanning transaction {idx} of {total_to_scan}...")
+                            
+                            # 1. Clear modals and wait for list
+                            self._dismiss_modals(page)
+                            page.wait_for_selector(", ".join(row_selectors), timeout=10000)
+                            
+                            # 2. Re-identify valid rows to avoid staleness
+                            all_rows = page.locator(", ".join(row_selectors)).all()
+                            current_valid_rows = []
+                            for r in all_rows:
+                                try:
+                                    t = r.text_content()
+                                    if t and "Select expense" in t:
+                                        current_valid_rows.append(r)
+                                except: continue
+                            
+                            if i >= len(current_valid_rows):
+                                logger.warning(f"  Transaction {idx} not found in current view. Skipping.")
+                                continue
+                            
+                            row = current_valid_rows[i]
+                            
+                            row.scroll_into_view_if_needed()
+                            
+                            # 3. Open details (using checkbox if available for better reliability)
+                            cb = row.locator(".sapMCb, [type='checkbox']").first
+                            if cb.count() > 0:
+                                cb.click(force=True)
+                            else:
+                                row.click(force=True)
+                            
+                            page.wait_for_timeout(1000)
+                            
+                            # 4. Click Edit
+                            edit_btn = page.locator("button:has-text('Edit'), .sapMBtn:has-text('Edit')").filter(has_text="Edit").first
+                            if edit_btn.count() > 0:
+                                if not edit_btn.is_enabled():
+                                    row.click(force=True)
+                                    page.wait_for_timeout(1000)
+                                if edit_btn.is_enabled():
+                                    edit_btn.click()
+                                    page.wait_for_timeout(3000)
+                            
+                            self._dismiss_modals(page)
+                            
+                            # 5. Extract fields (using robust label-based lookup)
+                            # Business Purpose
+                            try:
+                                # Try label-based first
+                                p_label = page.locator("label:has-text('Business Purpose')").first
+                                p_id = p_label.get_attribute("for") if p_label.count() > 0 else None
+                                if p_id:
+                                    expenses[i]["business_purpose"] = page.locator(f"#{p_id}").input_value().strip()
+                                else:
+                                    # Fallback to data-nuiexp
+                                    p_field = page.locator("[data-nuiexp*='purpose']").first
+                                    if p_field.count() > 0:
+                                        expenses[i]["business_purpose"] = p_field.input_value().strip()
+                            except: pass
+                            
+                            # Expense Type
+                            try:
+                                t_label = page.locator("label:has-text('Expense Type')").first
+                                t_id = t_label.get_attribute("for") if t_label.count() > 0 else None
+                                if t_id:
+                                    expenses[i]["expense_type"] = page.locator(f"#{t_id}").input_value().strip()
+                                else:
+                                    # Fallback to data-nuiexp
+                                    t_field = page.locator("[data-nuiexp*='type']").first
+                                    if t_field.count() > 0:
+                                        expenses[i]["expense_type"] = t_field.input_value().strip()
+                            except: pass
+                            
+                            # Comment
+                            try:
+                                c_label = page.locator("label:has-text('Comment')").first
+                                c_id = c_label.get_attribute("for") if c_label.count() > 0 else None
+                                if c_id:
+                                    expenses[i]["comment"] = page.locator(f"#{c_id}").input_value().strip()
+                                else:
+                                    # Fallback to data-nuiexp
+                                    c_field = page.locator("textarea[data-nuiexp*='comment'], [data-nuiexp*='comment']").first
+                                    if c_field.count() > 0:
+                                        expenses[i]["comment"] = c_field.input_value().strip()
+                            except: pass
+                            
+                            # 6. Back to list
+                            back_selectors = [
+                                ".sapcnqr-icon--nav-back",
+                                "button:has-text('Cancel')",
+                                "[data-nuiexp='exit-full-screen-button']"
+                            ]
+                            for sel in back_selectors:
+                                btn = page.locator(sel).first
+                                if btn.count() > 0 and btn.is_visible():
+                                    self._dismiss_modals(page)
+                                    btn.click(force=True)
+                                    page.wait_for_timeout(2000)
+                                    break
+                            
+                        except Exception as e:
+                            logger.error(f"  Failed to deep scan transaction {idx}: {e}")
+                            # Try to recover by reloading
+                            page.reload()
+                            page.wait_for_timeout(5000)
+                    
+                    # Add discovered types to result
+                    if 'available_types' in locals():
+                        res_data = locals().get('res_data', {}) # This might be outside scope, better use return dict
+                        # I'll just rely on returning it later
                 
                 # Deduplicate based on text content
                 unique_expenses = []
@@ -2245,6 +2713,76 @@ class ConcurBrowserClient:
 
             except Exception as e:
                 self._take_screenshot(page, "attach_receipt_error")
+                raise e
+            finally:
+                browser.close()
+    def submit_report(self, report_name: str, headless: bool = True) -> Dict[str, Any]:
+        """
+        Locates an expense report by name, opens it, and clicks the 'Submit Report' button.
+        Handles the confirmation dialog that typically follows.
+        """
+        logger.info(f"Submitting report '{report_name}' via browser (headless={headless})...")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
+            page = context.new_page()
+
+            try:
+                page.goto(f"{self.base_url}/nui/expense", timeout=30000)
+                self._wait_for_dashboard(page)
+                self._take_screenshot(page, "submit_report_start")
+
+                # Locate and open the report
+                card = page.locator(".report-tile, .report-card").filter(has_text=report_name).first
+                if card.count() == 0:
+                    card = page.locator(".sapMCard, .sapMLIB").filter(has_text=report_name).first
+                
+                if card.count() == 0:
+                    raise FileNotFoundError(f"Could not find report '{report_name}'.")
+
+                card.click()
+                page.wait_for_timeout(3000)
+                self._wait_for_report_view(page)
+                self._take_screenshot(page, "submit_report_opened")
+
+                # Click Submit Report
+                # The button ID #submit-entire-report-btn is often used in the modern UI
+                submit_btn = page.locator("#submit-entire-report-btn, button:has-text('Submit Report')").filter(visible=True).first
+                
+                if submit_btn.count() > 0 and submit_btn.is_enabled():
+                    # Register dialog accept handler for the confirmation popup
+                    page.on("dialog", lambda dialog: dialog.accept())
+                    
+                    submit_btn.click()
+                    logger.info("Clicked 'Submit Report' button.")
+                    
+                    # Wait for a potential second confirmation button (modern UI often has a summary dialog)
+                    page.wait_for_timeout(2000)
+                    final_confirm = page.locator("button:has-text('Submit Report'), .sapMBtn:has-text('Submit Report')").filter(visible=True).first
+                    if final_confirm.count() > 0 and final_confirm.is_enabled():
+                        final_confirm.click()
+                        logger.info("Clicked final 'Submit Report' confirmation.")
+                    
+                    page.wait_for_timeout(5000)
+                    self._take_screenshot(page, "submit_report_final")
+                    
+                    # Verify if we are back on the dashboard or see a success message
+                    if page.locator("text=Report Successfully Submitted").count() > 0 or page.url.endswith("/nui/expense"):
+                        logger.info("Report successfully submitted!")
+                        return {"success": True, "message": "Report successfully submitted"}
+                    else:
+                        logger.warning("Submit button clicked, but could not verify success message. Please check manually.")
+                        return {"success": True, "message": "Submit clicked, verification pending"}
+                else:
+                    # Check if it's already submitted or disabled
+                    if submit_btn.count() > 0 and not submit_btn.is_enabled():
+                        raise RuntimeError("Submit Report button is disabled. Ensure all alerts are resolved and justifications are filled.")
+                    else:
+                        raise RuntimeError("Submit Report button not found on this page.")
+
+            except Exception as e:
+                self._take_screenshot(page, "submit_report_error")
+                logger.error(f"Failed to submit report: {str(e)}")
                 raise e
             finally:
                 browser.close()

@@ -62,14 +62,16 @@ Build the Python environment, install requirements, and download Playwright chro
 | **Headless Browser Creation**| `./kkw create` | Programmatically logs in using saved state and creates a draft report. |
 | **Visible Browser Creation** | `./kkw create-headed` | Performs browser creation visibly on screen (useful for debugging). |
 | **List Historical Reports** | `./kkw query-old [filter]` | Query and list historical reports (e.g. "Last 90 Days"). |
-| **Report Details** | `./kkw report-details "Name" [filter]` | Fetch line-item details of a specific report. |
+| **Report Details** | `./kkw report-details "Name" [--deep]` | Fetch line-item details of a specific report. Use `--deep` for full accuracy. |
 | **List Card Transactions** | `./kkw list-cards [filter]` | List credit card transactions under specific activity filters. |
 | **Card Transaction Details** | `./kkw card-details "Merchant/ID" [filter]` | Fetch details for a card transaction by name or ID. |
 | **Add Expense Delegate** | `./kkw add-delegate "Name" [perms...]` | Add delegate and assign permissions (prepare, submit, approve). |
 | **Remove Expense Delegate** | `./kkw remove-delegate "Name"` | Remove expense delegate from settings page. |
 | **Reconcile Report** | `./kkw reconcile "Name" [rules.json] [--submit]` | Reconcile report transactions with rules (review-only by default). |
 | **Attach Receipt to Transaction** | `./kkw attach-receipt "Name" "Merchant" "receipt.pdf"` | Attach local receipt file directly to a transaction row in a report. |
-| **Update Report Transaction** | `./kkw update-transaction "Name" [index] [args...]` | Update fields (type, purpose, comment) of a transaction row in a report. |
+| **Update Report Transaction** | `./kkw update-transaction "Name" [indices...] [args...]` | Bulk update fields (type, justification) of transaction rows in a report. |
+| **Update Report Header** | `./kkw update-report "Name" [--name "New"] [--purpose "P"] [--comment "C"]` | Update report header fields like name, purpose, and comment. |
+| **Submit Report** | `./kkw submit-report "Name"` | Finalize and submit an expense report for approval. |
 
 ---
 
@@ -97,7 +99,7 @@ Concur separates active draft reports from older, submitted, or processed report
 * **Get Report Details:**
   ```bash
   # Get line items and header details for a specific report
-  ./kkw report-details "Old Lodging Report 2025" "Last 90 Days"
+  ./kkw report-details "Old Lodging Report 2025" --deep
   ```
   *Output Example:*
   ```text
@@ -212,25 +214,44 @@ Matching receipt PDFs or images to individual card transactions can be automated
   ./kkw attach-receipt "Receipt Upload Report A" "Uber" "receipts/uber_ride_receipt.pdf"
   ```
 
-### 6. Read and Write Report Transaction Fields (CRUD)
+### 6. Read and Write Report & Transaction Fields (CRUD)
 
-You can read or write individual transaction fields (Expense Type, Business Purpose, and Comments) inside an expense report. This supports full CRUD operations on transaction comments.
+You can read or write individual transaction fields (Expense Type, Business Purpose, and Comments) as well as the main report header fields.
+
+* **Update Report Header (Write/Update):**
+  ```bash
+  # Update report purpose and comment using the justification shortcut
+  ./kkw update-report "Transaction Report" --justification "Project Alpha research"
+
+  # Rename a report and update its purpose
+  ./kkw update-report "Old Name" --name "New Name" --purpose "Updated purpose"
+  ```
 
 * **Update Transaction fields (Write/Update):**
   ```bash
-  # Update Expense Type, Business Purpose, and Comment of transaction index 0 in "Transaction Report"
-  ./kkw update-transaction "Transaction Report" 0 --type "Ground Transportation" --purpose "Meeting client for lunch" --comment "Test comment"
+  # Update Expense Type and Justification for multiple items (indices 1, 2, and 3)
+  ./kkw update-transaction "Transaction Report" 1 2 3 --type "Software" --justification "Required for project X"
+
+  # Update specific fields for a single item
+  ./kkw update-transaction "Transaction Report" 1 --type "Ground Transportation" --purpose "Meeting client" --comment "Uber ride"
   ```
 
-* **Remove/Clear Transaction fields (Delete/Remove):**
+* **Remove/Clear fields (Delete/Remove):**
   ```bash
-  # Clear the comment field by passing an empty string
-  ./kkw update-transaction "Transaction Report" 0 --comment ""
+  # Clear a transaction comment field by passing an empty string
+  ./kkw update-transaction "Transaction Report" 1 --comment ""
   ```
 
 * **Verify / Read details (Read):**
   ```bash
-  ./kkw report-details "Transaction Report"
+  # Use --deep to see full line-item justifications
+  ./kkw report-details "Transaction Report" --deep
+  ```
+
+* **Submit Report (Finalize):**
+  ```bash
+  # Finalize and submit the report for approval
+  ./kkw submit-report "Transaction Report"
   ```
   *Output Example:*
   ```text
@@ -299,7 +320,7 @@ This project includes a fully automated **GitHub Actions CI/CD Pipeline** define
 
 1. **Host-Based Unit Tests**: Runs mock API tests directly on the runner.
 2. **Containerized Unit Tests**: Builds and executes mock unit tests inside a Docker container using `docker-compose`.
-3. **End-to-End Browser Smoke Tests**: Launches a stateful mock server and runs headless Playwright CRUD browser automation tests.
+3. **End-to-End Browser Smoke & Regression Tests**: Launches a stateful mock server and runs headless Playwright tests, including full CRUD and justification/classification regression suites.
 
 ---
 
@@ -339,5 +360,6 @@ Modern enterprise security often requires MFA or SSO login screens that standard
     ├── __init__.py
     ├── mock_concur_server.py # Stateful local mock SAP Concur Server
     ├── test_client.py      # Unit tests using requests mocks
-    └── test_browser_smoke.py # E2E local browser smoke tests
+    ├── test_browser_smoke.py # E2E local browser smoke tests
+    └── test_justification.py # Justification & Classification regression tests
 ```

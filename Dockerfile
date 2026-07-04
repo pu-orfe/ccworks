@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM mcr.microsoft.com/playwright/python:v1.60.0-jammy
 
 WORKDIR /app
 
@@ -11,4 +11,5 @@ COPY src/ ./src/
 COPY tests/ ./tests/
 
 # Command to run unit tests by default
+# This will find and run all test_*.py files, including justification tests
 CMD ["python", "-m", "unittest", "discover", "-s", "tests"]

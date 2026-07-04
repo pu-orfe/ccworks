@@ -70,18 +70,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <!-- Report Details Panel -->
     <div id="report-details-panel">
         <h2 id="detail-header-title">Report Detail</h2>
+        <div style="margin-bottom: 10px;">
+            <button id="report-details-btn" class="button" style="background:#e0e5ea;" onclick="showEditModalForCurrentReport()">Report Details</button>
+        </div>
         <p><strong>Report Number / ID:</strong> <span id="detail-report-id">REP-998877</span></p>
         <p><strong>Purpose:</strong> <span id="detail-purpose"></span></p>
         <p><strong>Comment:</strong> <span id="detail-comment"></span></p>
         
         <h3>Expenses (Line Items)</h3>
         <div id="detail-expenses-list">
-            <div class="detail-row"><strong>Date:</strong> 2026-06-12 | <strong>Type:</strong> Lodging | <strong>Amount:</strong> $150.00 | <strong>Merchant:</strong> Hilton</div>
-            <div class="detail-row"><strong>Date:</strong> 2026-06-13 | <strong>Type:</strong> Meal | <strong>Amount:</strong> $45.20 | <strong>Merchant:</strong> Italian Bistro</div>
+            <!-- Dynamically populated -->
         </div>
-        <div id="report-detail-actions">
-            <button class="button" onclick="closeReportDetails()" style="margin-top:15px; background:#e0e5ea;">Back to List</button>
+        <div id="report-detail-actions" style="margin-top:15px;">
+            <button class="button" onclick="closeReportDetails()" style="background:#e0e5ea; margin-right: 10px;">Back to List</button>
+            <button id="edit-transaction-btn" class="button" style="background:#0070d2; color:white; display:none;" onclick="openTransactionDetail()">Edit</button>
+            <button id="submit-entire-report-btn" class="button" style="background-color: #c9c9c9; color: white;" disabled onclick="submitReport()">Submit Report</button>
         </div>
+    </div>
+
+    <!-- Transaction Detail Side Panel (Simulated) -->
+    <div id="sapcnqr-layout-side-panel-elements" style="display:none; position:fixed; right:0; top:0; width:400px; height:100%; background:white; border-left:1px solid #ccc; padding:20px; box-shadow:-2px 0 5px rgba(0,0,0,0.1); z-index:5000;">
+        <h2>Expense Details</h2>
+        <div id="detail-pane-content"></div>
     </div>
 
     <h2 class="section-title">Available Expenses (Card Transactions)</h2>
@@ -204,7 +214,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             list.forEach((r, idx) => {
                 const card = document.createElement('div');
-                card.className = 'report-card';
+                card.className = 'report-card report-tile';
                 // Open details on clicking the card info (except edit/delete buttons)
                 card.onclick = (e) => {
                     if (e.target.tagName !== 'BUTTON') {
@@ -219,7 +229,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                     <div>
                         ${r.id ? '<span style="font-weight:bold; color:green; margin-right:10px;">Submitted</span>' : `
-                            <button class="button edit-btn" onclick="showEditModal(${idx}, '${r.name}', '${r.purpose || ''}', '${r.comment || ''}')">Edit</button>
+                            <button class="button edit-btn" onclick="showEditModal(${idx}, '${r.name}', '${r.purpose || ''}', '${r.comment || ''}')">Modify</button>
                             <button class="button delete-btn" onclick="deleteReport('${r.name}')">Delete</button>
                         `}
                     </div>
@@ -297,26 +307,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             } else {
                 txs.forEach((t, idx) => {
                     const row = document.createElement('div');
-                    row.className = 'detail-row transaction-recon-row';
+                    row.id = `tx-row-${idx}`;
+                    row.className = 'detail-row transaction-recon-row sapMLIB';
                     row.style.display = 'flex';
                     row.style.gap = '10px';
                     row.style.alignItems = 'center';
                     row.style.marginBottom = '10px';
+                    row.style.cursor = 'pointer';
+                    row.onclick = () => selectTransaction(row, t, idx);
                     row.innerHTML = `
+                        <div class="sapMCb" style="width:20px; height:20px; border:1px solid #ccc; margin-right:5px;"></div>
+                        <div style="display:none;">Select expense</div>
                         <div style="width: 120px; font-weight: bold;" class="recon-merchant">${t.merchant} (${t.amount})</div>
-                        <select class="recon-type" style="width: 120px;" id="recon-type-${idx}">
-                            <option value="">Expense Type...</option>
-                            <option value="Ground Transportation" ${t.expense_type === 'Ground Transportation' ? 'selected' : ''}>Ground Transportation</option>
-                            <option value="Office Supplies" ${t.expense_type === 'Office Supplies' ? 'selected' : ''}>Office Supplies</option>
-                            <option value="Lodging" ${t.expense_type === 'Lodging' ? 'selected' : ''}>Lodging</option>
-                            <option value="Meal" ${t.expense_type === 'Meal' ? 'selected' : ''}>Meal</option>
-                        </select>
-                        <input type="text" class="recon-purpose" style="width: 120px;" placeholder="Purpose" value="${t.business_purpose || ''}" id="recon-purpose-${idx}">
-                        <input type="text" class="recon-comment" style="width: 120px;" placeholder="Comment" value="${t.comment || ''}" id="recon-comment-${idx}">
-                        <input type="text" class="recon-allocation" style="width: 80px;" placeholder="Code" value="${t.allocation_code || ''}" id="recon-allocation-${idx}">
-                        <input type="file" class="recon-receipt-file" style="display:none;" id="recon-receipt-file-${idx}" onchange="uploadReceiptForTransaction('${r.name}', ${idx}, this.files[0].name)">
-                        <button type="button" class="button recon-attach-btn" style="background-color: #0070d2; color: white;" onclick="document.getElementById('recon-receipt-file-${idx}').click()">Attach Receipt</button>
-                        <button type="button" class="button recon-save-btn" style="background-color: #04844b; color: white;" onclick="saveReconTransaction('${r.name}', ${idx})">Save</button>
                         <div style="display: flex; flex-direction: column; font-size: 11px;">
                             ${t.reconciled ? '<span style="color: green; font-weight: bold;" class="recon-status">✓ Reconciled</span>' : '<span style="color: red;" class="recon-status">Pending</span>'}
                             ${t.receipt ? `<span style="color: blue;" class="receipt-attached-name">Attached: ${t.receipt}</span>` : ''}
@@ -325,22 +327,86 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     list.appendChild(row);
                 });
                 
-                const allReconciled = txs.every(t => t.reconciled);
-                const actionContainer = document.getElementById('report-detail-actions');
-                actionContainer.innerHTML = `
-                    <button class="button" onclick="closeReportDetails()" style="margin-top:15px; background:#e0e5ea; margin-right: 10px;">Back to List</button>
-                    <button id="submit-entire-report-btn" class="button" style="margin-top:15px; background-color: ${allReconciled ? '#0070d2' : '#c9c9c9'}; color: white;" ${allReconciled ? '' : 'disabled'} onclick="submitReport('${r.name}')">Submit Report</button>
-                `;
+                updateActionButtons(r);
             }
             
             document.getElementById('reports-container').style.display = 'none';
             document.getElementById('report-details-panel').style.display = 'block';
         }
 
+        let selectedTx = null;
+        let selectedTxIdx = -1;
+        let selectedReportName = '';
+
+        function selectTransaction(row, t, idx) {
+            // Deselect others
+            document.querySelectorAll('.transaction-recon-row').forEach(r => {
+                r.classList.remove('sapMLIBSelected');
+                r.querySelector('.sapMCb').classList.remove('sapMCbMarkChecked');
+            });
+            
+            row.classList.add('sapMLIBSelected');
+            row.querySelector('.sapMCb').classList.add('sapMCbMarkChecked');
+            selectedTx = t;
+            selectedTxIdx = idx;
+            document.getElementById('edit-transaction-btn').style.display = 'inline-block';
+            openTransactionDetail();
+        }
+
+        function updateActionButtons(r) {
+            const allReconciled = (r.transactions || []).every(t => t.reconciled);
+            const submitBtn = document.getElementById('submit-entire-report-btn');
+            submitBtn.disabled = !allReconciled;
+            submitBtn.style.backgroundColor = allReconciled ? '#0070d2' : '#c9c9c9';
+            selectedReportName = r.name;
+        }
+
+        function openTransactionDetail() {
+            const t = selectedTx;
+            const idx = selectedTxIdx;
+            const pane = document.getElementById('sapcnqr-layout-side-panel-elements');
+            const content = document.getElementById('detail-pane-content');
+            
+            content.innerHTML = `
+                <div class="form-group">
+                    <label for="recon-type-${idx}">Expense Type</label>
+                    <select class="recon-type" style="width: 100%;" id="recon-type-${idx}" data-nuiexp="field-type">
+                        <option value="">Expense Type...</option>
+                        <option value="Ground Transportation" ${t.expense_type === 'Ground Transportation' ? 'selected' : ''}>Ground Transportation</option>
+                        <option value="Office Supplies" ${t.expense_type === 'Office Supplies' ? 'selected' : ''}>Office Supplies</option>
+                        <option value="Lodging" ${t.expense_type === 'Lodging' ? 'selected' : ''}>Lodging</option>
+                        <option value="Meal" ${t.expense_type === 'Meal' ? 'selected' : ''}>Meal</option>
+                        <option value="Software" ${t.expense_type === 'Software' ? 'selected' : ''}>Software</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="businessPurpose">Business Purpose</label>
+                    <input type="text" class="recon-purpose" style="width: 100%;" id="businessPurpose" data-nuiexp="field-businessPurpose" value="${t.business_purpose || ''}">
+                </div>
+                <div class="form-group">
+                    <label for="recon-comment">Comment</label>
+                    <textarea class="recon-comment" style="width: 100%; height:80px;" id="recon-comment" data-nuiexp="field-comment">${t.comment || ''}</textarea>
+                </div>
+                <div class="form-group">
+                    <label>Allocation Code</label>
+                    <input type="text" id="recon-allocation-${idx}" style="width: 100%;" value="${t.allocation_code || ''}">
+                </div>
+                <div style="margin-top:20px;">
+                    <button class="button" style="background:#e0e5ea;" onclick="closeTransactionDetail()">Cancel</button>
+                    <button class="button" style="background:#04844b; color:white;" data-nuiexp="exp-save-expense" onclick="saveReconTransaction('${selectedReportName}', ${idx})">Save Expense</button>
+                </div>
+            `;
+            pane.style.display = 'block';
+        }
+
+        function closeTransactionDetail() {
+            document.getElementById('sapcnqr-layout-side-panel-elements').style.display = 'none';
+        }
+
         async function saveReconTransaction(reportName, idx) {
             const expense_type = document.getElementById(`recon-type-${idx}`).value;
-            const business_purpose = document.getElementById(`recon-purpose-${idx}`).value;
-            const comment = document.getElementById(`recon-comment-${idx}`).value;
+            const business_purpose = document.getElementById(`businessPurpose`).value;
+            const comment = document.getElementById(`recon-comment`).value;
             const allocation_code = document.getElementById(`recon-allocation-${idx}`).value;
             
             await fetch('/api/reports/reconcile_transaction', {
@@ -363,6 +429,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (updatedReport) {
                 showReportDetails(updatedReport);
             }
+            closeTransactionDetail();
         }
 
         async function uploadReceiptForTransaction(reportName, idx, fileName) {
@@ -435,6 +502,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 });
                 closeReceiptModal();
                 fetchReceipts();
+            }
+        }
+
+        function showEditModalForCurrentReport() {
+            const r = reportsData.find(r => r.name === selectedReportName);
+            if (r) {
+                const idx = reportsData.indexOf(r);
+                showEditModal(idx, r.name, r.purpose, r.comment);
             }
         }
 
@@ -832,6 +907,7 @@ class MockConcurServer:
             {"name": "taxi_receipt.png"},
             {"name": "hotel_receipt.jpg"}
         ]
+        RECEIPTS.clear()
         DELEGATES.clear()
         DELEGATES.append(
             {"name": "Existing Delegate", "email": "existing@example.com", "prepare": True, "submit": False, "approve": False}
