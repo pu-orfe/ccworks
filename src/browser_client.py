@@ -480,7 +480,7 @@ class ConcurBrowserClient:
                         self._take_screenshot(page, "list_reports_post_filter")
 
                 # Handle empty state
-                if page.locator(".no-reports").is_visible(timeout=2000):
+                if page.locator(".no-reports").filter(has_text="No reports found").is_visible(timeout=2000):
                     logger.info("No reports found on dashboard.")
                     return []
 
