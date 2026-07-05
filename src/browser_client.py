@@ -847,7 +847,13 @@ class ConcurBrowserClient:
                                     cb.click(force=True)
                                 else:
                                     row.click(force=True)
-                                page.wait_for_timeout(1000)
+                                page.wait_for_timeout(2000)
+                                
+                                # Check if detail pane opened directly from row click (common in Fiori/Mock)
+                                if page.locator("[data-nuiexp*='field'], input[id*='type'], .sapMInputBaseInner, .recon-type").filter(visible=True).count() > 0:
+                                    logger.info(f"  [{current_idx}] Detail pane opened directly from row click.")
+                                    selection_successful = True
+                                    break
                             except: pass
                             
                             # 3. Final verification of 'Edit' button or Detail pane
