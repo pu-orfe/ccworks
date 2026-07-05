@@ -2839,20 +2839,33 @@ class ConcurBrowserClient:
 
                     logger.info(f"Reconciling item '{raw_text}' using rule: {matched_rule}")
                     
-                    # Fill inputs
-                    sel_type = row.locator("select.recon-type")
+                    # If inputs are not found in the row, it might be because we need to click the row to open a side panel
+                    has_inline_inputs = row.locator("select.recon-type, input.recon-purpose").first.count() > 0
+                    if not has_inline_inputs:
+                        logger.info(f"  Inputs not found in row. Clicking row to open detail pane...")
+                        row.click()
+                        page.wait_for_timeout(2000)
+                    
+                    # Target inputs - check both row and page (for side panel)
+                    input_context = page if not has_inline_inputs else row
+                    
+                    # Expense Type
+                    sel_type = input_context.locator("select.recon-type, select[data-nuiexp*='type'], select[id*='type']").first
                     if sel_type.count() > 0:
                         sel_type.select_option(label=matched_rule.get("expense_type", ""))
                     
-                    inp_purpose = row.locator("input.recon-purpose")
+                    # Business Purpose
+                    inp_purpose = input_context.locator("input.recon-purpose, [data-nuiexp*='businessPurpose'], [id*='purpose']").first
                     if inp_purpose.count() > 0:
                         inp_purpose.fill(matched_rule.get("business_purpose", ""))
                     
-                    inp_comment = row.locator("input.recon-comment")
+                    # Comment
+                    inp_comment = input_context.locator("input.recon-comment, textarea.recon-comment, [data-nuiexp*='comment'], [id*='comment']").first
                     if inp_comment.count() > 0:
                         inp_comment.fill(matched_rule.get("comment", ""))
                     
-                    inp_alloc = row.locator("input.recon-allocation")
+                    # Allocation Code
+                    inp_alloc = input_context.locator("input.recon-allocation, [id*='allocation']").first
                     if inp_alloc.count() > 0:
                         inp_alloc.fill(matched_rule.get("allocation_code", ""))
                     
@@ -2861,22 +2874,36 @@ class ConcurBrowserClient:
                     if receipt_path:
                         import os
                         if os.path.exists(receipt_path):
-                            inp_receipt = row.locator("input.recon-receipt-file")
+                            inp_receipt = input_context.locator("input.recon-receipt-file, input[type='file']").first
                             if inp_receipt.count() > 0:
                                 inp_receipt.set_input_files(receipt_path)
                                 page.wait_for_timeout(2000)
-                                logger.info(f"Attached receipt '{receipt_path}' to transaction row '{raw_text}'.")
+                                logger.info(f"  Attached receipt '{receipt_path}' to transaction '{raw_text}'.")
                             else:
-                                logger.warning(f"Could not find receipt upload input element for '{raw_text}'.")
-                        else:
-                            logger.warning(f"Receipt file '{receipt_path}' for '{raw_text}' not found on disk.")
-
+                                logger.warning(f"  Could not find receipt upload input for '{raw_text}'.")
+                    
                     # Save this transaction
-                    save_btn = row.locator("button.recon-save-btn").first
-                    if save_btn.count() > 0:
-                        save_btn.click()
-                        page.wait_for_timeout(2000)
-                        logger.info("Saved transaction reconciliation fields.")
+                    save_btn_selectors = [
+                        "button.recon-save-btn",
+                        "[data-nuiexp='exp-save-expense']",
+                        "button:has-text('Save Expense')",
+                        "button:has-text('Save')"
+                    ]
+                    saved = False
+                    for sel in save_btn_selectors:
+                        btn = input_context.locator(sel).first
+                        if btn.count() > 0 and btn.is_visible():
+                            btn.click()
+                            page.wait_for_timeout(2000)
+                            logger.info(f"  Saved transaction '{raw_text}' using selector: {sel}")
+                            saved = True
+                            break
+                    
+                    if not saved and not has_inline_inputs:
+                        # Try closing the pane if we can't save
+                        logger.warning(f"  Could not save transaction '{raw_text}'. Closing pane.")
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(1000)
 
                 self._take_screenshot(page, "reconcile_all_saved")
 
@@ -2936,8 +2963,14 @@ class ConcurBrowserClient:
                 if row.count() == 0:
                     raise FileNotFoundError(f"Could not find transaction matching '{merchant_or_id}'.")
 
-                # Locate file input element and upload the file
-                input_file = row.locator("input.recon-receipt-file")
+                # Locate file input element - check row first, then click row and check page (side panel)
+                input_file = row.locator("input.recon-receipt-file, input[type='file']").first
+                if input_file.count() == 0:
+                    logger.info("  Receipt input not found in row. Clicking row to open detail pane...")
+                    row.click()
+                    page.wait_for_timeout(2000)
+                    input_file = page.locator("input.recon-receipt-file, input[type='file']").first
+
                 if input_file.count() == 0:
                     raise RuntimeError("Could not find file input for receipt upload.")
 
