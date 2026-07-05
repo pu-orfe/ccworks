@@ -907,7 +907,6 @@ class MockConcurServer:
             {"name": "taxi_receipt.png"},
             {"name": "hotel_receipt.jpg"}
         ]
-        RECEIPTS.clear()
         DELEGATES.clear()
         DELEGATES.append(
             {"name": "Existing Delegate", "email": "existing@example.com", "prepare": True, "submit": False, "approve": False}
