@@ -2829,7 +2829,7 @@ class ConcurBrowserClient:
 
                 card.click()
                 page.wait_for_timeout(3000)
-                self._wait_for_dashboard(page)
+                self._wait_for_report_view(page)
                 self._take_screenshot(page, "reconcile_opened_report")
 
                 # Iterate through reconciliation rows
@@ -2975,7 +2975,7 @@ class ConcurBrowserClient:
 
                 card.click()
                 page.wait_for_timeout(3000)
-                self._wait_for_dashboard(page)
+                self._wait_for_report_view(page)
                 self._take_screenshot(page, "attach_receipt_report_opened")
 
                 # Find the transaction row matching merchant_or_id
