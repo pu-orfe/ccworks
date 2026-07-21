@@ -185,6 +185,7 @@ class ConcurBrowserClient:
         and handle MFA/2FA or SSO. Once logged in, it saves the session state.
         """
         logger.info("Starting headed browser for login...")
+        import sys
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(viewport={"width": 1280, "height": 800})
@@ -193,15 +194,20 @@ class ConcurBrowserClient:
             logger.info(f"Navigating to login page: {self.base_url}")
             page.goto(self.base_url)
 
-            print("\n" + "=" * 80)
-            print(" ACTION REQUIRED:")
-            print(" 1. In the opened browser window, log in to SAP Concur.")
-            print(" 2. Complete any MFA/2FA, Single Sign-On (SSO), or Captchas if prompted.")
-            print(" 3. Once you see the Concur Homepage / Dashboard (fully logged in),")
-            print("    return to this terminal and press ENTER to save your session.")
-            print("=" * 80 + "\n")
+            # Write all interactive prompts to stderr so they show up even when stdout is redirected
+            sys.stderr.write("\n" + "=" * 80 + "\n")
+            sys.stderr.write(" ACTION REQUIRED:\n")
+            sys.stderr.write(" 1. In the opened browser window, log in to SAP Concur.\n")
+            sys.stderr.write(" 2. Complete any MFA/2FA, Single Sign-On (SSO), or Captchas if prompted.\n")
+            sys.stderr.write(" 3. Once you see the Concur Homepage / Dashboard (fully logged in),\n")
+            sys.stderr.write("    return to this terminal and press ENTER to save your session.\n")
+            sys.stderr.write("=" * 80 + "\n\n")
+            sys.stderr.flush()
 
-            input("Press ENTER here after you have logged in and see the Concur home page...")
+            sys.stderr.write("Press ENTER here after you have logged in and see the Concur home page... ")
+            sys.stderr.flush()
+            # Read from stdin
+            sys.stdin.readline()
 
             # Save authenticated state with lock
             with self._session_lock():
