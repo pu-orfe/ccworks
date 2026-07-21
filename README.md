@@ -18,7 +18,7 @@ It supports two modes of interaction:
 
 ### For Browser-Based Automation
 1. **Login Credentials**: Standard Concur username/password or SSO login.
-2. **Playwright Setup**: Playwright must be installed locally along with chromium binaries (handled automatically by `./kkw setup`).
+2. **Playwright Setup**: Playwright must be installed locally along with chromium binaries (handled automatically by `./ccworks setup`).
 
 ---
 
@@ -44,7 +44,7 @@ CONCUR_USER_LOGIN_ID=target_user_email@company.com
 Build the Python environment, install requirements, and download Playwright chromium browser binaries:
 
 ```bash
-./kkw setup
+./ccworks setup
 ```
 
 ---
@@ -55,25 +55,25 @@ Build the Python environment, install requirements, and download Playwright chro
 
 | Run Mode | Command | Scope / Notes |
 | :--- | :--- | :--- |
-| **Containerized Unit Tests** | `./kkw test-docker` | Runs mock tests in Docker (Offline, credentials not needed). |
-| **Local Unit Tests** | `./kkw test-local` | Runs mock tests locally using `.venv`. |
-| **Live API Test** | `./kkw run-live` | Tests token retrieval, report listing, and report creation. |
-| **Headed Browser Login** | `./kkw login` | Boots browser window for manual login, saves authentication state. |
-| **Headless Browser Creation**| `./kkw create` | Programmatically logs in using saved state and creates a draft report. |
-| **Visible Browser Creation** | `./kkw create-headed` | Performs browser creation visibly on screen (useful for debugging). |
-| **List Historical Reports** | `./kkw query-old [filter]` | Query and list historical reports (e.g. "Last 90 Days"). |
-| **Report Details** | `./kkw report-details "Name" [--deep]` | Fetch line-item details of a specific report. Use `--deep` for full accuracy. |
-| **List Card Transactions** | `./kkw list-cards [filter]` | List credit card transactions under specific activity filters. |
-| **Card Transaction Details** | `./kkw card-details "Merchant/ID" [filter]` | Fetch details for a card transaction by name or ID. |
-| **Add Expense Delegate** | `./kkw add-delegate "Name" [perms...]` | Add delegate and assign permissions (prepare, submit, approve). |
-| **Remove Expense Delegate** | `./kkw remove-delegate "Name"` | Remove expense delegate from settings page. |
-| **Reconcile Report** | `./kkw reconcile "Name" [rules.json] [--submit]` | Reconcile report transactions with rules (review-only by default). |
-| **Attach Receipt to Transaction** | `./kkw attach-receipt "Name" "Merchant" "receipt.pdf"` | Attach local receipt file directly to a transaction row in a report. |
-| **Update Report Transaction** | `./kkw update-transaction "Name" [indices...] [args...]` | Bulk update fields (type, justification) of transaction rows in a report. |
-| **Update Report Header** | `./kkw update-report "Name" [--name "New"] [--purpose "P"] [--comment "C"]` | Update report header fields like name, purpose, and comment. |
-| **Submit Report** | `./kkw submit-report "Name"` | Finalize and submit an expense report for approval. |
-| **List Transaction Allocations** | `./kkw allocations "Name"` | List chartstring allocations (Dept, Fund, etc) for a report. |
-| **Add Transaction Allocation** | `./kkw add-allocation "Name" [idx] --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. |
+| **Containerized Unit Tests** | `./ccworks test-docker` | Runs mock tests in Docker (Offline, credentials not needed). |
+| **Local Unit Tests** | `./ccworks test-local` | Runs mock tests locally using `.venv`. |
+| **Live API Test** | `./ccworks run-live` | Tests token retrieval, report listing, and report creation. |
+| **Headed Browser Login** | `./ccworks login` | Boots browser window for manual login, saves authentication state. |
+| **Headless Browser Creation**| `./ccworks create` | Programmatically logs in using saved state and creates a draft report. |
+| **Visible Browser Creation** | `./ccworks create-headed` | Performs browser creation visibly on screen (useful for debugging). |
+| **List Historical Reports** | `./ccworks query-old [filter]` | Query and list historical reports (e.g. "Last 90 Days"). |
+| **Report Details** | `./ccworks report-details "Name" [--deep]` | Fetch line-item details of a specific report. Use `--deep` for full accuracy. |
+| **List Card Transactions** | `./ccworks list-cards [filter]` | List credit card transactions under specific activity filters. |
+| **Card Transaction Details** | `./ccworks card-details "Merchant/ID" [filter]` | Fetch details for a card transaction by name or ID. |
+| **Add Expense Delegate** | `./ccworks add-delegate "Name" [perms...]` | Add delegate and assign permissions (prepare, submit, approve). |
+| **Remove Expense Delegate** | `./ccworks remove-delegate "Name"` | Remove expense delegate from settings page. |
+| **Reconcile Report** | `./ccworks reconcile "Name" [rules.json] [--submit]` | Reconcile report transactions with rules (review-only by default). |
+| **Attach Receipt to Transaction** | `./ccworks attach-receipt "Name" "Merchant" "receipt.pdf"` | Attach local receipt file directly to a transaction row in a report. |
+| **Update Report Transaction** | `./ccworks update-transaction "Name" [indices...] [args...]` | Bulk update fields (type, justification) of transaction rows in a report. |
+| **Update Report Header** | `./ccworks update-report "Name" [--name "New"] [--purpose "P"] [--comment "C"]` | Update report header fields like name, purpose, and comment. |
+| **Submit Report** | `./ccworks submit-report "Name"` | Finalize and submit an expense report for approval. |
+| **List Transaction Allocations** | `./ccworks allocations "Name"` | List chartstring allocations (Dept, Fund, etc) for a report. |
+| **Add Transaction Allocation** | `./ccworks add-allocation "Name" [idx] --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. |
 
 ---
 
@@ -86,10 +86,10 @@ Concur separates active draft reports from older, submitted, or processed report
 * **List Old Reports:**
   ```bash
   # Query using the default 'Last 90 Days' filter
-  ./kkw query-old
+  ./ccworks query-old
   
   # Specify a custom filter (e.g., 'All Reports')
-  ./kkw query-old "All Reports"
+  ./ccworks query-old "All Reports"
   ```
   *Output Example:*
   ```text
@@ -101,7 +101,7 @@ Concur separates active draft reports from older, submitted, or processed report
 * **Get Report Details:**
   ```bash
   # Get line items and header details for a specific report
-  ./kkw report-details "Old Lodging Report 2025" --deep
+  ./ccworks report-details "Old Lodging Report 2025" --deep
   ```
   *Output Example:*
   ```text
@@ -122,10 +122,10 @@ Automates listing and viewing credit card transactions inside the **Available Ex
 * **List Card Transactions:**
   ```bash
   # List corporate and personal cards (default)
-  ./kkw list-cards "All Corporate and Personal Cards"
+  ./ccworks list-cards "All Corporate and Personal Cards"
   
   # List purchasing cards
-  ./kkw list-cards "All Purchasing Cards"
+  ./ccworks list-cards "All Purchasing Cards"
   ```
   *Output Example:*
   ```text
@@ -135,7 +135,7 @@ Automates listing and viewing credit card transactions inside the **Available Ex
 
 * **Get Transaction Details:**
   ```bash
-  ./kkw card-details "Office Depot" "All Purchasing Cards"
+  ./ccworks card-details "Office Depot" "All Purchasing Cards"
   ```
   *Output Example:*
   ```text
@@ -155,16 +155,16 @@ Automates adding and removing delegates, plus managing permissions in the profil
   Add a delegate by name or email, specifying checkboxes for permissions (`prepare`, `submit`, `approve`).
   ```bash
   # Add John Doe with Prepare and Submit permissions
-  ./kkw add-delegate "John Doe" prepare submit
+  ./ccworks add-delegate "John Doe" prepare submit
   
   # Add Jane Smith with Prepare and Approve permissions
-  ./kkw add-delegate "Jane Smith" prepare approve
+  ./ccworks add-delegate "Jane Smith" prepare approve
   ```
 
 * **Remove Expense Delegate:**
   Remove a delegate by selecting their checkbox, triggering 'Delete', and saving the profiles page.
   ```bash
-  ./kkw remove-delegate "John Doe"
+  ./ccworks remove-delegate "John Doe"
   ```
 
 ### 4. Month-End Expense Reconciliation
@@ -174,19 +174,19 @@ Reconciliation is a critical month-end task. The client navigates inside a repor
 * **Reconcile Report (Review-Only / Default):**
   ```bash
   # Reconcile using default built-in matching rules (does not submit)
-  ./kkw reconcile "Reconciliation Report A"
+  ./ccworks reconcile "Reconciliation Report A"
   
   # Reconcile using custom rules (does not submit)
-  ./kkw reconcile "Reconciliation Report A" my_recon_rules.json
+  ./ccworks reconcile "Reconciliation Report A" my_recon_rules.json
   ```
 
 * **Reconcile and Automatically Submit Report:**
   ```bash
   # Reconcile and submit immediately
-  ./kkw reconcile "Reconciliation Report A" --submit
+  ./ccworks reconcile "Reconciliation Report A" --submit
   
   # Reconcile using custom rules and submit
-  ./kkw reconcile "Reconciliation Report A" my_recon_rules.json --submit
+  ./ccworks reconcile "Reconciliation Report A" my_recon_rules.json --submit
   ```
   
   *Example `my_recon_rules.json` file:*
@@ -213,7 +213,7 @@ Matching receipt PDFs or images to individual card transactions can be automated
 
 * **Attach Local Receipt to Report Expense:**
   ```bash
-  ./kkw attach-receipt "Receipt Upload Report A" "Uber" "receipts/uber_ride_receipt.pdf"
+  ./ccworks attach-receipt "Receipt Upload Report A" "Uber" "receipts/uber_ride_receipt.pdf"
   ```
 
 ### 6. Read and Write Report & Transaction Fields (CRUD)
@@ -223,37 +223,37 @@ You can read or write individual transaction fields (Expense Type, Business Purp
 * **Update Report Header (Write/Update):**
   ```bash
   # Update report purpose and comment using the justification shortcut
-  ./kkw update-report "Transaction Report" --justification "Project Alpha research"
+  ./ccworks update-report "Transaction Report" --justification "Project Alpha research"
 
   # Rename a report and update its purpose
-  ./kkw update-report "Old Name" --name "New Name" --purpose "Updated purpose"
+  ./ccworks update-report "Old Name" --name "New Name" --purpose "Updated purpose"
   ```
 
 * **Update Transaction fields (Write/Update):**
   ```bash
   # Update Expense Type and Justification for multiple items (indices 1, 2, and 3)
-  ./kkw update-transaction "Transaction Report" 1 2 3 --type "Software" --justification "Required for project X"
+  ./ccworks update-transaction "Transaction Report" 1 2 3 --type "Software" --justification "Required for project X"
 
   # Update specific fields for a single item
-  ./kkw update-transaction "Transaction Report" 1 --type "Ground Transportation" --purpose "Meeting client" --comment "Uber ride"
+  ./ccworks update-transaction "Transaction Report" 1 --type "Ground Transportation" --purpose "Meeting client" --comment "Uber ride"
   ```
 
 * **Remove/Clear fields (Delete/Remove):**
   ```bash
   # Clear a transaction comment field by passing an empty string
-  ./kkw update-transaction "Transaction Report" 1 --comment ""
+  ./ccworks update-transaction "Transaction Report" 1 --comment ""
   ```
 
 * **Verify / Read details (Read):**
   ```bash
   # Use --deep to see full line-item justifications
-  ./kkw report-details "Transaction Report" --deep
+  ./ccworks report-details "Transaction Report" --deep
   ```
 
 * **Submit Report (Finalize):**
   ```bash
   # Finalize and submit the report for approval
-  ./kkw submit-report "Transaction Report"
+  ./ccworks submit-report "Transaction Report"
   ```
   *Output Example:*
   ```text
@@ -276,7 +276,7 @@ Automates reading and writing **Chartstrings** (Department, Fund, Program, etc.)
 * **List Current Allocations:**
   ```bash
   # List all allocations for every transaction in a report
-  ./kkw allocations "Project Alpha Report"
+  ./ccworks allocations "Project Alpha Report"
   ```
   *Output Example:*
   ```json
@@ -296,7 +296,7 @@ Automates reading and writing **Chartstrings** (Department, Fund, Program, etc.)
 * **Add a New Allocation (Chartstring):**
   ```bash
   # Add a specific chartstring to transaction index 1
-  ./kkw add-allocation "Project Alpha Report" 1 \
+  ./ccworks add-allocation "Project Alpha Report" 1 \
       --dept "(25605) ORF-Technical Support" \
       --fund "(A0001) General Fund" \
       --prog "(P999) Research"
@@ -372,7 +372,7 @@ Modern enterprise security often requires MFA or SSO login screens that standard
 
 1. Run the manual session setup:
    ```bash
-   ./kkw login
+   ./ccworks login
    ```
 2. A headed Chromium window will open. Enter your email/password, solve SSO if prompted, and complete the MFA authentication.
 3. Once logged in and redirected to the SAP Concur dashboard page, return to your terminal and press **ENTER**.
@@ -390,7 +390,7 @@ Modern enterprise security often requires MFA or SSO login screens that standard
 │       └── concur.ts                     # Pi coding agent extension (13 tools)
 ├── Dockerfile                            # Docker container definition
 ├── docker-compose.yml                    # Service orchestration for testing
-├── kkw                                   # Zsh shell helper script (CLI entry point)
+├── ccworks                                   # Zsh shell helper script (CLI entry point)
 ├── requirements.txt                      # Third-party Python dependencies
 ├── src/
 │   ├── __init__.py

@@ -6,7 +6,7 @@ set -euo pipefail
 
 # Print usage helper to stderr
 usage() {
-    echo "Usage: ./kkw [command]" >&2
+    echo "Usage: ./ccworks [command]" >&2
     echo "Commands:" >&2
     echo "  setup                 Set up local virtual environment, install requirements, and Playwright browsers" >&2
     echo "  test-local            Run mock unit tests locally on the host" >&2
@@ -151,7 +151,7 @@ case "$CMD" in
     delete)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the report name to delete." >&2
-            echo "Usage: ./kkw delete \"Report Name\"" >&2
+            echo "Usage: ./ccworks delete \"Report Name\"" >&2
             exit 1
         fi
         echo "=== Deleting report via browser ===" >&2
@@ -178,7 +178,7 @@ case "$CMD" in
     report-details)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the report name." >&2
-            echo "Usage: ./kkw report-details \"Report Name\" [args...]" >&2
+            echo "Usage: ./ccworks report-details \"Report Name\" [args...]" >&2
             exit 1
         fi
         ensure_venv
@@ -189,7 +189,7 @@ case "$CMD" in
     allocations)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the report name." >&2
-            echo "Usage: ./kkw allocations \"Report Name\" [args...]" >&2
+            echo "Usage: ./ccworks allocations \"Report Name\" [args...]" >&2
             exit 1
         fi
         ensure_venv
@@ -205,7 +205,7 @@ case "$CMD" in
     card-details)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the card transaction merchant name or transaction ID." >&2
-            echo "Usage: ./kkw card-details \"Merchant or ID\" [filter]" >&2
+            echo "Usage: ./ccworks card-details \"Merchant or ID\" [filter]" >&2
             exit 1
         fi
         ensure_venv
@@ -215,7 +215,7 @@ case "$CMD" in
     add-delegate)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the delegate name/email." >&2
-            echo "Usage: ./kkw add-delegate \"Name or Email\" [permission1 permission2 ...]" >&2
+            echo "Usage: ./ccworks add-delegate \"Name or Email\" [permission1 permission2 ...]" >&2
             exit 1
         fi
         ensure_venv
@@ -231,7 +231,7 @@ case "$CMD" in
     remove-delegate)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the delegate name/email." >&2
-            echo "Usage: ./kkw remove-delegate \"Name or Email\"" >&2
+            echo "Usage: ./ccworks remove-delegate \"Name or Email\"" >&2
             exit 1
         fi
         ensure_venv
@@ -240,7 +240,7 @@ case "$CMD" in
     reconcile)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the report name to reconcile." >&2
-            echo "Usage: ./kkw reconcile \"Report Name\" [rules.json] [--submit]" >&2
+            echo "Usage: ./ccworks reconcile \"Report Name\" [rules.json] [--submit]" >&2
             exit 1
         fi
         ensure_venv
@@ -269,7 +269,7 @@ case "$CMD" in
     attach-receipt)
         if [ $# -lt 4 ]; then
             echo "Error: Please specify report name, merchant name, and local receipt file path." >&2
-            echo "Usage: ./kkw attach-receipt \"Report Name\" \"Merchant Name\" \"receipt.pdf\"" >&2
+            echo "Usage: ./ccworks attach-receipt \"Report Name\" \"Merchant Name\" \"receipt.pdf\"" >&2
             exit 1
         fi
         ensure_venv
@@ -278,7 +278,7 @@ case "$CMD" in
     update-transaction)
         if [ $# -lt 3 ]; then
             echo "Error: Please specify report name and transaction index." >&2
-            echo "Usage: ./kkw update-transaction \"Report Name\" [indices...] [--type \"T\"] [--justification \"J\"]" >&2
+            echo "Usage: ./ccworks update-transaction \"Report Name\" [indices...] [--type \"T\"] [--justification \"J\"]" >&2
             exit 1
         fi
         ensure_venv
@@ -289,7 +289,7 @@ case "$CMD" in
     update-report)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the report name." >&2
-            echo "Usage: ./kkw update-report \"Report Name\" [args...]" >&2
+            echo "Usage: ./ccworks update-report \"Report Name\" [args...]" >&2
             exit 1
         fi
         ensure_venv
@@ -300,7 +300,7 @@ case "$CMD" in
     submit-report)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the report name to submit." >&2
-            echo "Usage: ./kkw submit-report \"Report Name\"" >&2
+            echo "Usage: ./ccworks submit-report \"Report Name\"" >&2
             exit 1
         fi
         ensure_venv
@@ -309,7 +309,7 @@ case "$CMD" in
     apply-json)
         if [ $# -lt 2 ]; then
             echo "Error: Please specify the JSON file path." >&2
-            echo "Usage: ./kkw apply-json \"path/to/edited.json\"" >&2
+            echo "Usage: ./ccworks apply-json \"path/to/edited.json\"" >&2
             exit 1
         fi
         ensure_venv

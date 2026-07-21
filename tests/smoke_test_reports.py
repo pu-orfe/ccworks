@@ -15,7 +15,7 @@ def run_live_reports_smoke_test():
     
     if not os.path.exists(session_file):
         print(f"[ERROR] Session file '{session_file}' not found.")
-        print("Please authenticate first by running: ./kkw login")
+        print("Please authenticate first by running: ./ccworks login")
         sys.exit(1)
 
     print("=" * 60)
