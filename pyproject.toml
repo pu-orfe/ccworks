@@ -7,7 +7,7 @@ name = "ccworks"
 version = "0.1.0"
 description = "SAP Concur browser-automation and API helper"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { file = "LICENSE.md" }
 authors = [
     { name = "Michael Bino" },
@@ -20,6 +20,7 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Financial",

@@ -7,7 +7,7 @@ from http.server import HTTPServer
 import threading
 
 # Adjust path to import src and tests modules
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from tests.mock_concur_server import MockConcurServer
 from ccworks.browser_client import ConcurBrowserClient

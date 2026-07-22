@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 # Adjust path to import src modules
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from ccworks.browser_client import ConcurBrowserClient
 
