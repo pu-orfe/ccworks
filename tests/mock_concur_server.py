@@ -51,8 +51,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </style>
 </head>
 <body>
+    <!--
+      Reproduction of the onboarding dialog Concur shows over the dashboard
+      after a feature release. Class names, role, and aria-modal are copied
+      from a real failure where clicking a report tile timed out for 30s with
+      "<div class='sapcnqr-dialog__body ...'> subtree intercepts pointer
+      events". It is rendered on every dashboard load so all browser tests
+      exercise the dismissal in _wait_for_dashboard.
+    -->
+    <div id="onboarding-dialog"
+         role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="onboarding-title"
+         class="sapcnqr-dialog vip-widgets__text-app-onboarding-dialog sapcnqr-dialog--width-lg sapcnqr-dialog__fade sapcnqr-dialog__fade--in"
+         style="position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center;">
+      <div class="sapcnqr-dialog__body vip-widgets__text-app-onboarding-dialog__body"
+           style="position:absolute; inset:0; background:rgba(0,0,0,0.4);">
+        <div style="background:#fff; padding:24px; max-width:420px; margin:120px auto; border-radius:8px;">
+          <h2 id="onboarding-title">What's New in Expense</h2>
+          <p>Take a quick tour of the redesigned expense experience.</p>
+          <button aria-label="Close" onclick="dismissOnboarding()">Close</button>
+        </div>
+      </div>
+    </div>
+    <script>
+        function dismissOnboarding() {
+            var el = document.getElementById("onboarding-dialog");
+            if (el) { el.remove(); }
+        }
+    </script>
+
     <h1>Expense Dashboard</h1>
-    
+
     <div style="margin-bottom: 15px;">
         <label for="report-view-select" style="font-weight:bold;">View: </label>
         <!-- The View select dropdown to filter Reports -->
@@ -794,15 +822,28 @@ class MockConcurRequestHandler(BaseHTTPRequestHandler):
             name = data.get("name", "Unnamed")
             purpose = data.get("purpose", "")
             comment = data.get("comment", "")
+            # A report whose name contains DUPES is seeded with two byte-identical
+            # line items, reproducing the ordinary purchasing-card case of two
+            # shipments booked the same day for the same amount. ccworks used to
+            # deduplicate rows by their text content and silently drop the second.
+            # Keyed off the name so existing tests' row counts are unaffected.
+            if "DUPES" in name:
+                transactions = [
+                    {"id": "TX_DUP_1", "merchant": "ESHIPGLOBAL INC", "amount": "$53.77", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                    {"id": "TX_DUP_2", "merchant": "ESHIPGLOBAL INC", "amount": "$53.77", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                    {"id": "TX_DUP_3", "merchant": "Office Depot", "amount": "$189.99", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                ]
+            else:
+                transactions = [
+                    {"id": "TX_REP_1", "merchant": "Uber", "amount": "$24.50", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                    {"id": "TX_REP_2", "merchant": "Office Depot", "amount": "$189.99", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False}
+                ]
             REPORTS.append({
                 "name": name,
                 "purpose": purpose,
                 "comment": comment,
                 "status": "Draft",
-                "transactions": [
-                    {"id": "TX_REP_1", "merchant": "Uber", "amount": "$24.50", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
-                    {"id": "TX_REP_2", "merchant": "Office Depot", "amount": "$189.99", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False}
-                ]
+                "transactions": transactions,
             })
             
             self.send_response(201)

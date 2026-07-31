@@ -135,9 +135,16 @@ class TestJustificationAndClassification(unittest.TestCase):
             f.write("dummy image data")
             
         try:
+            # Indices are 1-based and dense, matching `report show`. `vendor` and
+            # `amount` are required: apply_json_updates verifies that the row at
+            # the index really is this expense before editing it, and refuses
+            # when it cannot check. A positional index alone is not safe to write
+            # against, since the report may have changed since it was captured.
             updates = [
                 {
-                    "index": 0,
+                    "index": 1,
+                    "vendor": "Uber",
+                    "amount": "$24.50",
                     "expense_type": "Software",
                     "business_purpose": "Bulk purpose",
                     "comment": "Bulk comment",

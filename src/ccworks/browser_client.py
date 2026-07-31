@@ -40,6 +40,141 @@ class ConcurBrowserClient:
         page.screenshot(path=path)
         logger.info(f"Captured screenshot: {path}")
 
+    # Selectors for expense line-item rows inside a report. Deliberately broad:
+    # Concur's markup varies between editable, read-only, and historical reports.
+    EXPENSE_ROW_SELECTORS = [
+        # Current Concur grid markup. This was only in _get_transaction_rows'
+        # private copy of the list, so the other paths could miss rows entirely.
+        ".sapcnqr-data-grid-list__row",
+        ".detail-row",
+        ".sapMListUl .sapMLIB",
+        "[class*='expense-item']",
+        "[class*='expense-row']",
+        ".sapMCustomListItem",
+        "[role='row']",
+        "[role='listitem']",
+        ".sapMTable tr",
+        "tr.sapMLIB",
+    ]
+
+    def _collect_expense_rows(self, page, report_name: str = "", report_num: str = "Unknown"):
+        """Return (rows, diagnostics) for a report's expense line items.
+
+        Every command must address rows through this helper. Previously each of
+        get_report_details / update_report_transaction / apply_json_updates had
+        its own copy of the selector list *and* a slightly different filter, and
+        get_report_details reported a row's position among the raw selector
+        matches while the write paths indexed into their own filtered lists. The
+        index in one command therefore did not denote the same row as the same
+        index in another, so a `report show` -> edit -> `report apply-json`
+        round-trip could write to the wrong expense.
+
+        The returned list is in document order. A row's 1-based index is its
+        position in this list plus one, and that is the only index ccworks
+        exposes or accepts.
+        """
+        candidates = page.locator(", ".join(self.EXPENSE_ROW_SELECTORS)).all()
+        diagnostics = {"candidates_seen": len(candidates), "skipped": []}
+        logger.info(f"Discovered {len(candidates)} potential expense line item(s) using broad selectors.")
+
+        rows = []
+        for position, row in enumerate(candidates):
+            def skip(reason):
+                diagnostics["skipped"].append({"candidate_position": position, "reason": reason})
+
+            try:
+                text = row.text_content()
+            except Exception as e:
+                skip(f"unreadable: {e}")
+                continue
+            if not text:
+                skip("empty")
+                continue
+
+            text = " ".join(text.split()).strip()
+            if len(text) < 15:
+                skip("too short to be an expense row")
+                continue
+
+            lower_text = text.lower()
+            if "expense type" in lower_text and "vendor details" in lower_text:
+                skip("column header row")
+                continue
+            if "select all rows" in lower_text:
+                skip("select-all header row")
+                continue
+            if "no expenses" in lower_text or "add an expense" in lower_text:
+                skip("empty-state placeholder")
+                continue
+            if report_name and report_name.lower() in lower_text:
+                if len(text) < len(report_name) + 25:
+                    skip("report title header")
+                    continue
+            if report_num and report_num != "Unknown" and report_num.lower() in lower_text:
+                if len(text) < len(report_num) + 25:
+                    skip("report number header")
+                    continue
+
+            # An expense row carries the row-select control, or (on read-only and
+            # historical reports that lack it) labelled Date/Type/Amount fields,
+            # or failing that a bare date-and-amount pair.
+            #
+            # That last fallback used to be unreachable: it called re.search in a
+            # function whose body also had a local `import re` further down, so
+            # `re` was function-local and the call raised UnboundLocalError,
+            # which the enclosing `except Exception: continue` swallowed --
+            # silently dropping the row. Here `re` is the module-level import.
+            is_expense = (
+                "Select expense" in text
+                or ("Date:" in text and "Type:" in text and "Amount:" in text)
+                or bool(re.search(r"\d{2}/\d{2}/\d{4}.*?\$\d+", text))
+            )
+            if not is_expense:
+                skip("no expense markers (Select expense / Date+Type+Amount)")
+                continue
+
+            rows.append(row)
+
+        if diagnostics["skipped"]:
+            logger.info(
+                f"Filtered {len(diagnostics['skipped'])} non-expense candidate(s); "
+                f"{len(rows)} expense row(s) remain."
+            )
+        return rows, diagnostics
+
+    def _row_identity_mismatch(self, row, expense: Dict[str, Any]) -> Optional[str]:
+        """Return a reason string if `row` is not the expense described, else None.
+
+        A write keyed only on a positional index is trustworthy only while the
+        report is unchanged. If a line item was added, removed, or re-sorted in
+        Concur after `report show` produced the JSON, the index still resolves --
+        to the wrong expense. Amount is the discriminator (a currency string that
+        must appear in the row's text); vendor is checked when present but is
+        matched loosely because Concur truncates and decorates merchant names.
+        """
+        try:
+            text = " ".join((row.text_content() or "").split()).strip()
+        except Exception as e:
+            return f"row text unreadable: {e}"
+        if not text:
+            return "row has no text"
+
+        amount = (expense.get("amount") or "").strip()
+        if amount and amount not in text:
+            return f"expected amount {amount!r} not present in row"
+
+        vendor = (expense.get("vendor") or "").strip()
+        if vendor and vendor.lower() not in ("", "unknown"):
+            # Compare on the leading token: "ANTHROPIC* CLAUDE TEAM" in the JSON
+            # may render as "ANTHROPIC*" or with a trailing location in the row.
+            head = vendor.split()[0].rstrip("*").lower()
+            if head and head not in text.lower():
+                return f"expected vendor {vendor!r} not present in row"
+
+        if not amount and not vendor:
+            return "expense has neither amount nor vendor to verify against"
+        return None
+
     def _dismiss_modals(self, page):
         """Aggressively dismisses common SAP Concur overlays."""
         # 1. Timeline Modal / What's New
@@ -162,6 +297,16 @@ class ConcurBrowserClient:
             logger.info("Dashboard components loaded and visible.")
         except Exception as e:
             logger.warning(f"Proceeding after dashboard load timeout: {str(e)}")
+
+        # Clear overlays before any caller tries to interact with the grid.
+        # Concur shows onboarding / what's-new dialogs (e.g.
+        # .vip-widgets__text-app-onboarding-dialog) over the dashboard on first
+        # visit after a feature release. They are modal and swallow pointer
+        # events, so a click on a report tile retries for its full timeout and
+        # fails with "<div ...dialog__body> subtree intercepts pointer events"
+        # even though the tile resolved correctly. Callers previously dismissed
+        # only *after* the click that the dialog was blocking.
+        self._dismiss_modals(page)
 
     def _wait_for_report_view(self, page: Any) -> None:
         """Helper to wait for the inside of a report to load."""
@@ -751,34 +896,11 @@ class ConcurBrowserClient:
                 self._wait_for_report_view(page)
                 self._take_screenshot(page, "update_transaction_report_opened")
 
-                # Common selectors for expense rows
-                row_selectors = [
-                    ".detail-row", 
-                    ".sapMListUl .sapMLIB", 
-                    "[class*='expense-item']", 
-                    "[class*='expense-row']", 
-                    ".sapMCustomListItem",
-                    "[role='row']",
-                    "[role='listitem']",
-                    ".sapMTable tr",
-                    "tr.sapMLIB"
-                ]
-                expense_rows_all = page.locator(", ".join(row_selectors)).all()
-                
-                # Filter rows exactly like get_report_details
-                valid_rows = []
-                for r in expense_rows_all:
-                    try:
-                        text = r.text_content()
-                        if not text: continue
-                        text = " ".join(text.split()).strip()
-                        if len(text) < 15: continue
-                        lower_text = text.lower()
-                        if "expense type" in lower_text and "vendor details" in lower_text: continue
-                        if "select all rows" in lower_text: continue
-                        valid_rows.append(r)
-                    except:
-                        continue
+                # Same row definition as the read and write paths, so index N
+                # here is the same expense as index N in `report show`. The
+                # comment above this block used to claim it filtered "exactly
+                # like get_report_details"; it did not.
+                valid_rows, _ = self._collect_expense_rows(page, report_name)
 
                 if not valid_rows:
                     self._take_screenshot(page, "no_rows_found_debug")
@@ -812,32 +934,7 @@ class ConcurBrowserClient:
                                 # Re-locate the row after reload
 
                             # 1. Re-identify rows to avoid staleness
-                            row_selectors = [
-                                ".sapcnqr-data-grid-list__row",
-                                ".detail-row",
-                                ".sapMListUl .sapMLIB",
-                                "[class*='expense-item']",
-                                "[class*='expense-row']",
-                                ".sapMCustomListItem",
-                                "[role='row']",
-                                "[role='listitem']",
-                                ".sapMTable tr",
-                                "tr.sapMLIB"
-                            ]
-                            all_rows = page.locator(", ".join(row_selectors)).all()
-                            # Filter to find the correct valid row
-                            current_valid_rows = []
-                            for r in all_rows:
-                                try:
-                                    text = r.text_content()
-                                    if not text: continue
-                                    text = " ".join(text.split()).strip()
-                                    if len(text) < 15: continue
-                                    lower_text = text.lower()
-                                    if "expense type" in lower_text and "vendor details" in lower_text: continue
-                                    if "select all rows" in lower_text: continue
-                                    current_valid_rows.append(r)
-                                except: continue
+                            current_valid_rows, _ = self._collect_expense_rows(page, report_name)
                             
                             if current_idx > len(current_valid_rows):
                                 logger.warning(f"  [{current_idx}] Index out of range in this attempt (found {len(current_valid_rows)}).")
@@ -1820,70 +1917,15 @@ class ConcurBrowserClient:
 
                 # List expenses line items
                 expenses = []
-                # Common selectors for expense rows in various Concur versions
-                row_selectors = [
-                    ".detail-row", 
-                    ".sapMListUl .sapMLIB", 
-                    "[class*='expense-item']", 
-                    "[class*='expense-row']", 
-                    ".sapMCustomListItem",
-                    "[role='row']",
-                    "[role='listitem']",
-                    ".sapMTable tr",
-                    "tr.sapMLIB"
-                ]
-                expense_rows = page.locator(", ".join(row_selectors)).all()
-                logger.info(f"Discovered {len(expense_rows)} potential expense line item(s) using broad selectors.")
+                # One shared definition of what an expense row is, so a row's
+                # index means the same thing here as in the write paths.
+                expense_rows, row_diagnostics = self._collect_expense_rows(page, name, report_num)
 
-                # Common header/noise text to ignore
-                ignore_keywords = ["date", "expense type", "amount", "merchant", "status", "requested", "total", "business purpose"]
-                
-                valid_rows = []
-                for idx, row in enumerate(expense_rows):
+                for position, row in enumerate(expense_rows):
+                    # Dense and 1-based: the only index ccworks exposes or accepts.
+                    idx = position + 1
                     try:
-                        text = row.text_content()
-                        if not text:
-                            continue
-                        text = " ".join(text.split()).strip() # Normalize whitespace
-                        
-                        # Basic filtering to avoid empty rows or header rows
-                        if len(text) < 15:
-                            continue
-                            
-                        # If it's a header row, skip it
-                        lower_text = text.lower()
-                        if "expense type" in lower_text and "vendor details" in lower_text:
-                            continue
-                        if "select all rows" in lower_text:
-                            continue
-                        
-                        # Skip if it's just the Report Name or Number we already have
-                        if name.lower() in lower_text or (report_num != "Unknown" and report_num.lower() in lower_text):
-                            if len(text) < len(name) + 25: # Likely just the header
-                                continue
-
-                        # If it's just a placeholder or instruction, skip it
-                        if "no expenses" in lower_text or "add an expense" in lower_text:
-                            continue
-
-                        # If we reach here, it's a valid transaction row
-                        is_valid = ("Select expense" in text)
-                        
-                        # Fallback for read-only or historical reports that might not have "Select expense" checkbox
-                        if not is_valid:
-                            # If it has Date, Type, and Amount keywords/values, it's likely a valid row
-                            if "Date:" in text and "Type:" in text and "Amount:" in text:
-                                is_valid = True
-                            elif re.search(r'\d{2}/\d{2}/\d{4}.*?\$\d+', text): # Date and Amount pattern
-                                is_valid = True
-                                
-                        if is_valid:
-                            valid_rows.append(row)
-                        else:
-                            continue
-
-                        # Structure parsing
-                        import re
+                        text = " ".join((row.text_content() or "").split()).strip()
                         
                         # Initialize fields
                         date_str = ""
@@ -2040,6 +2082,10 @@ class ConcurBrowserClient:
                         continue
 
                 # Deep scan: open each transaction to get full details
+                # Rows whose detail pane will not open keep their shallow fields;
+                # the failure is recorded so the caller can tell partial data from
+                # complete data instead of trusting "success": true.
+                deep_failures = []
                 if deep:
                     # We determine the count first
                     total_to_scan = len(expenses)
@@ -2053,25 +2099,20 @@ class ConcurBrowserClient:
                             # 1. Clear modals and wait for list
                             self._dismiss_modals(page)
                             try:
-                                page.wait_for_selector(", ".join(row_selectors), timeout=20000, state="visible")
+                                page.wait_for_selector(", ".join(self.EXPENSE_ROW_SELECTORS), timeout=20000, state="visible")
                             except Exception as e:
                                 logger.warning(f"  Transaction list not immediately visible after back/cancel: {e}")
                                 # Try one more wait or refresh
                                 page.wait_for_timeout(2000)
-                                if page.locator(", ".join(row_selectors)).count() == 0:
+                                if page.locator(", ".join(self.EXPENSE_ROW_SELECTORS)).count() == 0:
                                     logger.error("  List still not found. Attempting to scroll.")
                                     page.mouse.wheel(0, 500)
                                     page.wait_for_timeout(1000)
                             
-                            # 2. Re-identify valid rows to avoid staleness
-                            all_rows = page.locator(", ".join(row_selectors)).all()
-                            current_valid_rows = []
-                            for r in all_rows:
-                                try:
-                                    t = r.text_content()
-                                    if t and "Select expense" in t:
-                                        current_valid_rows.append(r)
-                                except: continue
+                            # 2. Re-identify valid rows to avoid staleness, through the
+                            # same helper the shallow pass used so `i` still refers to
+                            # the same expense.
+                            current_valid_rows, _ = self._collect_expense_rows(page, name, report_num)
                             
                             if i >= len(current_valid_rows):
                                 logger.warning(f"  Transaction {idx} not found in current view. Skipping.")
@@ -2121,6 +2162,12 @@ class ConcurBrowserClient:
                                 
                             if not selection_successful:
                                 logger.warning(f"  Failed to open detail pane for transaction {i+1}")
+                                deep_failures.append({
+                                    "index": i + 1,
+                                    "vendor": expenses[i].get("vendor"),
+                                    "amount": expenses[i].get("amount"),
+                                    "reason": "detail pane did not open; shallow fields only",
+                                })
                                 continue
                             
                             self._dismiss_modals(page)
@@ -2224,7 +2271,7 @@ class ConcurBrowserClient:
                             # Wait and VERIFY we are back in the list, NOT the dashboard
                             if clicked_back:
                                 page.wait_for_timeout(2000)
-                                if page.locator(".report-tile").count() > 0 and page.locator(", ".join(row_selectors)).count() == 0:
+                                if page.locator(".report-tile").count() > 0 and page.locator(", ".join(self.EXPENSE_ROW_SELECTORS)).count() == 0:
                                     logger.warning("  Oops! Went back to dashboard. Re-opening report...")
                                     report_card = page.locator(".report-tile").filter(has_text=name).first
                                     if report_card.count() > 0:
@@ -2239,6 +2286,12 @@ class ConcurBrowserClient:
                             
                         except Exception as e:
                             logger.error(f"  Failed to deep scan transaction {idx}: {e}")
+                            deep_failures.append({
+                                "index": idx,
+                                "vendor": expenses[idx - 1].get("vendor") if idx - 1 < len(expenses) else None,
+                                "amount": expenses[idx - 1].get("amount") if idx - 1 < len(expenses) else None,
+                                "reason": f"deep scan error: {e}",
+                            })
                             # Try to recover by reloading
                             page.reload()
                             page.wait_for_timeout(5000)
@@ -2248,14 +2301,25 @@ class ConcurBrowserClient:
                         res_data = locals().get('res_data', {}) # This might be outside scope, better use return dict
                         # I'll just rely on returning it later
                 
-                # Deduplicate based on text content
-                unique_expenses = []
-                seen_texts = set()
+                # Rows are no longer deduplicated by text. They come from a single
+                # querySelectorAll pass, which yields each element exactly once, so
+                # two entries with identical text are two distinct rows -- e.g. two
+                # shipments booked the same day for the same amount, which is
+                # ordinary on a purchasing-card statement. Dropping the second was
+                # silent data loss on a reconciliation tool. Identical rows are
+                # reported instead, so a genuine scraping duplicate is still visible.
+                text_counts = {}
                 for exp in expenses:
-                    if exp["raw_text"] not in seen_texts:
-                        unique_expenses.append(exp)
-                        seen_texts.add(exp["raw_text"])
-                expenses = unique_expenses
+                    text_counts[exp["raw_text"]] = text_counts.get(exp["raw_text"], 0) + 1
+                identical_groups = [
+                    {"raw_text": text, "count": count}
+                    for text, count in text_counts.items() if count > 1
+                ]
+                if identical_groups:
+                    logger.info(
+                        f"{len(identical_groups)} group(s) of line items are textually identical "
+                        f"and were all kept; verify against Concur if unexpected."
+                    )
 
                 if not expenses:
                     logger.warning("No expenses found. Capturing diagnostic screenshot and page text.")
@@ -2264,12 +2328,29 @@ class ConcurBrowserClient:
                     all_text = page.locator("body").text_content()
                     logger.info(f"Page text content snippet: {all_text[:1000]}...")
 
+                # What the scrape did *not* capture belongs in the payload, not
+                # only in -v logs. "success": true previously coexisted with
+                # dropped rows and failed deep scans with no way to tell.
+                extraction = {
+                    "candidates_seen": row_diagnostics["candidates_seen"],
+                    "expenses_returned": len(expenses),
+                    "skipped_candidates": row_diagnostics["skipped"],
+                    "identical_line_items": identical_groups,
+                }
+                if deep:
+                    extraction["deep_scan_failures"] = deep_failures
+                    extraction["complete"] = not deep_failures
+                else:
+                    extraction["complete"] = True
+
                 return {
                     "success": True,
                     "report_name": name,
                     "report_number": report_num,
                     "purpose": purpose,
                     "comment": comment,
+                    "index_base": "1-based, dense, matches `txn update` and `report apply-json`",
+                    "extraction": extraction,
                     "expenses": expenses
                 }
 
@@ -3337,36 +3418,14 @@ class ConcurBrowserClient:
         self._wait_for_report_view(page)
 
     def _get_transaction_rows(self, page: Any) -> List[Any]:
-        """Helper to find all valid transaction rows in the current report view."""
-        row_selectors = [
-            ".sapcnqr-data-grid-list__row",
-            ".detail-row", 
-            ".sapMListUl .sapMLIB", 
-            "[class*='expense-item']", 
-            "[class*='expense-row']", 
-            ".sapMCustomListItem",
-            "[role='row']",
-            "[role='listitem']",
-            ".sapMTable tr",
-            "tr.sapMLIB"
-        ]
-        expense_rows_all = page.locator(", ".join(row_selectors)).all()
-        
-        valid_rows = []
-        for r in expense_rows_all:
-            try:
-                text = r.text_content()
-                if not text: continue
-                text = " ".join(text.split()).strip()
-                if len(text) < 10: continue
-                lower_text = text.lower()
-                # Filter out header rows or 'select all' rows
-                if "expense type" in lower_text and "vendor details" in lower_text: continue
-                if "select all rows" in lower_text: continue
-                valid_rows.append(r)
-            except:
-                continue
-        return valid_rows
+        """All expense rows in the current report view, in document order.
+
+        Thin wrapper over _collect_expense_rows so the allocation paths share one
+        definition of a row with the read and write paths. Callers of this helper
+        index it 0-based; the CLI converts from the 1-based index it exposes.
+        """
+        rows, _ = self._collect_expense_rows(page)
+        return rows
 
     def _set_combobox_value(self, page: Any, container_selector: str, value: str, clear: bool = True) -> None:
         """Helper to handle Concur's searchable combobox fields (Searchable Selects)."""
@@ -3442,73 +3501,53 @@ class ConcurBrowserClient:
                 self._wait_for_report_view(page)
                 self._dismiss_modals(page)
                 
-                # Fetch valid rows
-                row_selectors = [
-                    ".sapcnqr-data-grid-list__row",
-                    ".detail-row",
-                    ".sapMListUl .sapMLIB",
-                    "[class*='expense-item']",
-                    "[class*='expense-row']",
-                    ".sapMCustomListItem",
-                    "[role='row']",
-                    "[role='listitem']",
-                    ".sapMTable tr",
-                    "tr.sapMLIB"
-                ]
-                
-                all_rows = page.locator(", ".join(row_selectors)).all()
-                valid_rows = []
-                for r in all_rows:
-                    try:
-                        text = r.text_content()
-                        if not text: continue
-                        text = " ".join(text.split()).strip()
-                        if len(text) < 15: continue
-                        lower_text = text.lower()
-                        if "expense type" in lower_text and "vendor details" in lower_text: continue
-                        if "select all rows" in lower_text: continue
-                        valid_rows.append(r)
-                    except: continue
-                    
+                valid_rows, _ = self._collect_expense_rows(page, report_name)
                 logger.info(f"Discovered {len(valid_rows)} transaction row(s) in Concur.")
-                
+
                 for exp in sorted(expenses, key=lambda e: e.get("index", 0)):
-                    idx = exp.get("index") # 0-based
-                    if idx is None or idx < 0 or idx >= len(valid_rows):
+                    # 1-based and dense, the same space `report show` emits and
+                    # `txn update` accepts. This previously read the index as a
+                    # 0-based offset into a differently-filtered list, so a
+                    # `report show` -> edit -> `apply-json` round-trip could write
+                    # each change to the wrong expense.
+                    idx = exp.get("index")
+                    if idx is None or idx < 1 or idx > len(valid_rows):
                         logger.warning(f"Index {idx} is out of bounds. Skipping.")
                         results.append({"index": idx, "success": False, "error": "Index out of bounds"})
                         continue
-                        
+
                     expense_type = exp.get("expense_type") or exp.get("type")
                     purpose = exp.get("business_purpose", "")
                     comment = exp.get("comment", "")
                     vendor = exp.get("vendor", "Unknown")
                     amount = exp.get("amount", "")
-                    
-                    logger.info(f"Updating Row {idx+1}: {vendor} - {amount}")
+
+                    # Refuse to edit a row that is not the expense the caller
+                    # described. Index alignment can still drift if the report
+                    # changed in Concur since the JSON was produced, and a silent
+                    # mis-write to a financial record is far worse than a refusal.
+                    mismatch = self._row_identity_mismatch(valid_rows[idx - 1], exp)
+                    if mismatch:
+                        logger.error(f"Row {idx} does not match the supplied expense: {mismatch}")
+                        results.append({
+                            "index": idx, "success": False,
+                            "error": f"Row does not match supplied expense ({mismatch}). "
+                                     f"Re-run `report show` to get current indices.",
+                        })
+                        continue
+
+                    logger.info(f"Updating Row {idx}: {vendor} - {amount}")
                     
                     # Selection loop (up to 3 attempts)
                     selection_successful = False
                     for attempt in range(3):
                         # Re-identify rows to prevent staleness
-                        all_rows = page.locator(", ".join(row_selectors)).all()
-                        current_valid_rows = []
-                        for r in all_rows:
-                            try:
-                                text = r.text_content()
-                                if not text: continue
-                                text = " ".join(text.split()).strip()
-                                if len(text) < 15: continue
-                                lower_text = text.lower()
-                                if "expense type" in lower_text and "vendor details" in lower_text: continue
-                                if "select all rows" in lower_text: continue
-                                current_valid_rows.append(r)
-                            except: continue
-                            
-                        if idx >= len(current_valid_rows):
+                        current_valid_rows, _ = self._collect_expense_rows(page, report_name)
+
+                        if idx > len(current_valid_rows):
                             break
-                            
-                        row = current_valid_rows[idx]
+
+                        row = current_valid_rows[idx - 1]
                         row.scroll_into_view_if_needed()
                         
                         try:

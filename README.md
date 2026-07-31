@@ -320,6 +320,59 @@ ccworks report show "Statement Report 06/16 - 07/31" --deep --output json > repo
 ccworks report apply-json report.json
 ```
 
+#### Indices, and what `apply-json` will refuse
+
+`index` is **1-based and dense** — position among the report's expense line
+items, counting every one of them. The same number addresses the same expense in
+`report show`, `txn update`, `txn allocate`, and `report apply-json`.
+
+Before editing a row, `apply-json` checks that the row at that index actually
+carries the amount (and vendor) of the expense you described. On a mismatch it
+**refuses that row** and tells you to re-run `report show`, rather than writing
+to a different expense:
+
+```json
+{ "index": 7, "success": false,
+  "error": "Row does not match supplied expense (expected amount '$45.00' not present in row). Re-run `report show` to get current indices." }
+```
+
+That matters because a positional index is only valid while the report is
+unchanged. Add, delete, or re-sort a line item in Concur after producing the
+JSON and the index still resolves — to the wrong expense.
+
+**Regenerate JSON captured before 0.3.0.** Earlier versions numbered rows by
+their position among raw HTML matches, so the numbers were sparse and did not
+line up with what the write paths counted.
+
+#### Knowing the capture was complete
+
+`report show` reports what it did *not* return, so `"success": true` no longer
+hides omissions:
+
+```json
+"extraction": {
+  "candidates_seen": 17,
+  "expenses_returned": 15,
+  "skipped_candidates": [
+    { "candidate_position": 0,  "reason": "column header row" },
+    { "candidate_position": 16, "reason": "too short to be an expense row" }
+  ],
+  "identical_line_items": [
+    { "raw_text": "... Shipping & Freight, $23.28 ... ESHIPGLOBAL INC ...", "count": 2 }
+  ],
+  "deep_scan_failures": [],
+  "complete": true
+}
+```
+
+`identical_line_items` flags rows whose text matches exactly. These are **kept**
+— two shipments booked the same day for the same amount are two expenses, and
+earlier versions deduplicated by text and silently dropped the second, which
+understated report totals. Check them against Concur if you did not expect them.
+
+With `--deep`, `deep_scan_failures` lists rows whose detail pane would not open;
+those keep their shallow fields, and `complete` is `false`.
+
 ### 7. Transaction allocations (chartstrings)
 
 ```bash

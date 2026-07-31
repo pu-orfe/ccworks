@@ -79,8 +79,33 @@ draft. Prefer it, show the user the result, then ask before submitting.
 
 - Reports are addressed **by name**, not ID. Always quote:
   `ccworks report show "Reconciliation Report A"`
-- Transaction indices are **1-based**, and `txn update` accepts several:
-  `ccworks txn update "Report A" 1 2 5 --justification "Conference travel"`
+- Transaction indices are **1-based and dense**, and mean the same row in
+  `report show`, `txn update`, `txn allocate`, and `report apply-json`. Several
+  at once: `ccworks txn update "Report A" 1 2 5 --justification "Conference travel"`
+- Indices are positional, so they are only valid while the report is unchanged.
+  Re-run `report show` before acting on numbers from an earlier capture; do not
+  reuse indices from a JSON file written by ccworks before 0.3.0.
+
+## Check `extraction` before trusting a capture
+
+`report show` returns an `extraction` block; `"success": true` alone does not
+mean the data is complete. Read it and tell the user what it says:
+
+- `identical_line_items` — rows with byte-identical text. They are **kept** (two
+  shipments the same day for the same amount are two expenses). Mention them; do
+  not treat them as errors or dedupe them yourself.
+- `skipped_candidates` — non-expense rows filtered out, with a reason each.
+- `deep_scan_failures` (with `--deep`) — rows whose detail pane never opened;
+  they carry shallow fields only.
+- `complete` — false when anything above means the capture is partial.
+
+Never sum amounts or reconcile from a capture where `complete` is false without
+saying so.
+
+`report apply-json` verifies that the row at each index carries the expense's
+amount and vendor, and **refuses** that row otherwise. If you see
+"Row does not match supplied expense", the JSON is stale — re-run `report show`
+and rebuild it. Do not try to guess a corrected index.
 - If a name is ambiguous or unverified, run `report list` (drafts) or
   `report list --historical` and confirm the exact string first.
 
