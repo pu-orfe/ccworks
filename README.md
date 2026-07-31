@@ -67,7 +67,7 @@ anything it doesn't recognize — it does not pass unknown commands through.**
   `test-receipts-live`, `run-live`, `query-old`, `create`, `create-headed`,
   `delete`
 * **Installed CLI only** (these *fail* via `./ccworks`): `list-old-reports`,
-  `create-report`, `delete-report`, `add-allocation`, `api-test`
+  `create-report`, `delete-report`, `api-test`
 * **Renames**: `query-old`→`list-old-reports`, `create`/`create-headed`→
   `create-report`, `delete`→`delete-report`, `run-live`→`api-test`
 
@@ -122,7 +122,7 @@ CONCUR_USER_LOGIN_ID=target_user_email@company.com
 | **Update Report Header** | `./ccworks update-report "Name" [--name "New"] [--purpose "P"] [--comment "C"]` | Update report header fields like name, purpose, and comment. |
 | **Submit Report** | `./ccworks submit-report "Name"` | Finalize and submit an expense report for approval. |
 | **List Transaction Allocations** | `./ccworks allocations "Name"` | List chartstring allocations (Dept, Fund, etc) for a report. |
-| **Add Transaction Allocation** | `ccworks add-allocation "Name" [idx] --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. **Not available via the `./ccworks` launcher** — use the installed CLI or `.venv/bin/python -m ccworks.cli`. |
+| **Add Transaction Allocation** | `./ccworks add-allocation "Name" <idx> --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. |
 
 ---
 
@@ -384,14 +384,9 @@ Automates reading and writing **Chartstrings** (Department, Fund, Program, etc.)
   ```
 
 * **Add a New Allocation (Chartstring):**
-
-  `add-allocation` is only exposed by the Python CLI, not the `./ccworks`
-  launcher — invoke the installed `ccworks`, or from a checkout use
-  `.venv/bin/python -m ccworks.cli`.
-
   ```bash
   # Add a specific chartstring to transaction index 1
-  ccworks add-allocation "Project Alpha Report" 1 \
+  ./ccworks add-allocation "Project Alpha Report" 1 \
       --dept "(25605) ORF-Technical Support" \
       --fund "(A0001) General Fund" \
       --prog "(P999) Research"

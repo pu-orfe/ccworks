@@ -25,7 +25,7 @@ through, so Python-CLI names fail against it:
   `test-reports-live`, `test-receipts-live`, `run-live`, `query-old`, `create`,
   `create-headed`, `delete`
 - Python-CLI-only (**fail via `./ccworks`**): `list-old-reports`,
-  `create-report`, `delete-report`, `add-allocation`, `api-test`
+  `create-report`, `delete-report`, `api-test`
 
 Launcher → CLI renames: `query-old`→`list-old-reports`, `create`/`create-headed`
 →`create-report`, `delete`→`delete-report`, `run-live`→`api-test`.

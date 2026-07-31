@@ -39,6 +39,7 @@ usage() {
     echo "  query-old [filter]    Query and list historical/old expense reports (default: 'Last 90 Days')" >&2
     echo "  report-details \"Name\" [--deep] Get detailed view of an expense report by name (use --deep for full accuracy)" >&2
     echo "  allocations \"Name\" [--filter-view \"F\"] Query allocation details (cost centers) for a report" >&2
+    echo "  add-allocation \"Name\" <index> --dept \"D\" --fund \"F\" [--prog \"P\"] Add a chartstring allocation to a transaction" >&2
     echo "  list-cards [filter]   Query and list credit card transactions (default: 'All Corporate and Personal Cards')" >&2
     echo "  card-details \"Merchant/ID\" [filter] Get detailed view of a card transaction by merchant or ID" >&2
     echo "  add-delegate \"Name or Email\" [perms...] Add a new expense delegate (permissions: prepare, submit, approve)" >&2
@@ -236,6 +237,16 @@ case "$CMD" in
         ensure_venv
         shift 1
         run_cli allocations "$@"
+        ;;
+    add-allocation)
+        if [ $# -lt 3 ]; then
+            echo "Error: Please specify the report name and transaction index." >&2
+            echo "Usage: ccworks add-allocation \"Report Name\" <index> --dept \"D\" --fund \"F\" [--prog \"P\"]" >&2
+            exit 1
+        fi
+        ensure_venv
+        shift 1
+        run_cli add-allocation "$@"
         ;;
     list-cards)
         ensure_venv
