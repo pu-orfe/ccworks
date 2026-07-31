@@ -225,8 +225,14 @@ def build_parser():
 
     # `required=False` so bare `ccworks` prints our formatted reference instead
     # of argparse's "the following arguments are required" error.
+    # `prog` must be passed explicitly. On Python < 3.14 argparse derives the
+    # subparser prog prefix from the parent's `usage=` string when one is set,
+    # so every subcommand's help rendered as
+    #   usage: ccworks [-h] [-v] [--output {json,text}] <command> [args...] report list
+    # Python 3.14 derives it from `prog` instead, which is why this only shows up
+    # on the versions most users actually run.
     subparsers = parser.add_subparsers(dest="group", required=False, metavar="<command>",
-                                       help=argparse.SUPPRESS)
+                                       prog="ccworks", help=argparse.SUPPRESS)
 
     group_parsers = {}
 

@@ -181,5 +181,51 @@ class TestGuards(unittest.TestCase):
         self.assertIn("reconcile", proc.stderr)
 
 
+class TestHelpRendering(unittest.TestCase):
+    """Subcommand help must not inherit the top-level usage string.
+
+    argparse before 3.14 derives a subparser's prog prefix from the parent's
+    `usage=` when one is set, rather than from `prog`. Without an explicit prog
+    on add_subparsers, every subcommand rendered as
+
+        usage: ccworks [-h] [-v] [--output {json,text}] <command> [args...] report list
+
+    This passes trivially on 3.14 and fails on 3.10-3.13, which is what CI and
+    the Homebrew formula run -- so assert the exact prefix rather than just
+    "looks fine here".
+    """
+
+    def _help_first_line(self, *argv):
+        proc = subprocess.run(
+            [sys.executable, "-m", "ccworks.cli", *argv, "--help"],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+            env={**__import__("os").environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        return proc.stdout.splitlines()[0]
+
+    def test_subcommand_usage_starts_with_its_own_path(self):
+        for argv in (("report", "list"), ("txn", "allocate"), ("card", "show"),
+                     ("session", "status")):
+            expected = "usage: ccworks " + " ".join(argv)
+            first = self._help_first_line(*argv)
+            self.assertTrue(
+                first.startswith(expected),
+                f"expected help to start with {expected!r}, got {first!r}",
+            )
+
+    def test_subcommand_usage_omits_global_flags(self):
+        first = self._help_first_line("report", "list")
+        for leaked in ("--output", "<command>", "[args...]"):
+            self.assertNotIn(
+                leaked, first,
+                f"top-level usage leaked into subcommand help: {first!r}",
+            )
+
+    def test_group_usage_starts_with_its_own_path(self):
+        first = self._help_first_line("report")
+        self.assertTrue(first.startswith("usage: ccworks report"), first)
+
+
 if __name__ == "__main__":
     unittest.main()
