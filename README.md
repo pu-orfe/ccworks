@@ -48,6 +48,36 @@ cd ccworks
 ./ccworks setup       # creates .venv, `pip install -e .`, installs chromium
 ```
 
+### Two command surfaces
+
+There are two ways to invoke ccworks, and they do **not** accept the same
+commands:
+
+| | `./ccworks <cmd>` | `ccworks <cmd>` |
+| :--- | :--- | :--- |
+| Source | The zsh launcher in a repo checkout | Entry point from Homebrew / `pip install` |
+| Role | Manages `.venv`, then calls `python -m ccworks.cli` | The Python CLI itself |
+| Style | Positional and ergonomic | Flag-based and complete |
+
+The launcher renames some commands, adds its own, and **exits 1 with usage on
+anything it doesn't recognize — it does not pass unknown commands through.**
+
+* **Launcher only** (no equivalent in the installed CLI): `setup`, `test-local`,
+  `test-docker`, `test-browser-smoke`, `test-reports-live`,
+  `test-receipts-live`, `run-live`, `query-old`, `create`, `create-headed`,
+  `delete`
+* **Installed CLI only** (these *fail* via `./ccworks`): `list-old-reports`,
+  `create-report`, `delete-report`, `add-allocation`, `api-test`
+* **Renames**: `query-old`→`list-old-reports`, `create`/`create-headed`→
+  `create-report`, `delete`→`delete-report`, `run-live`→`api-test`
+
+Examples below use `./ccworks` launcher syntax unless noted. From a checkout you
+can always reach the full flag-based CLI directly:
+
+```bash
+.venv/bin/python -m ccworks.cli list-old-reports --filter-view "All Reports"
+```
+
 ### Configure credentials
 
 Copy the template `.env.example` file to `.env`, and populate it with your credentials:
@@ -92,7 +122,7 @@ CONCUR_USER_LOGIN_ID=target_user_email@company.com
 | **Update Report Header** | `./ccworks update-report "Name" [--name "New"] [--purpose "P"] [--comment "C"]` | Update report header fields like name, purpose, and comment. |
 | **Submit Report** | `./ccworks submit-report "Name"` | Finalize and submit an expense report for approval. |
 | **List Transaction Allocations** | `./ccworks allocations "Name"` | List chartstring allocations (Dept, Fund, etc) for a report. |
-| **Add Transaction Allocation** | `./ccworks add-allocation "Name" [idx] --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. |
+| **Add Transaction Allocation** | `ccworks add-allocation "Name" [idx] --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. **Not available via the `./ccworks` launcher** — use the installed CLI or `.venv/bin/python -m ccworks.cli`. |
 
 ---
 
@@ -354,9 +384,14 @@ Automates reading and writing **Chartstrings** (Department, Fund, Program, etc.)
   ```
 
 * **Add a New Allocation (Chartstring):**
+
+  `add-allocation` is only exposed by the Python CLI, not the `./ccworks`
+  launcher — invoke the installed `ccworks`, or from a checkout use
+  `.venv/bin/python -m ccworks.cli`.
+
   ```bash
   # Add a specific chartstring to transaction index 1
-  ./ccworks add-allocation "Project Alpha Report" 1 \
+  ccworks add-allocation "Project Alpha Report" 1 \
       --dept "(25605) ORF-Technical Support" \
       --fund "(A0001) General Fund" \
       --prog "(P999) Research"
