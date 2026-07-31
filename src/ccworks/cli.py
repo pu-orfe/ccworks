@@ -78,39 +78,120 @@ class Spinner:
             self.thread.join()
 
 
+# ---------------------------------------------------------------------------
+# Command surface
+#
+# One front door: resource groups with verb subcommands (`ccworks report list`),
+# following the convention used by gh/kubectl/docker. The parser below is a
+# front-end that normalizes (group, subcommand, flags) into the legacy internal
+# command tokens the dispatcher already switches on, so the dispatcher bodies
+# stay untouched.
+# ---------------------------------------------------------------------------
+
+# Old flat names -> the new invocation that replaces them. Removed outright
+# (hard break), but we intercept them to emit a pointed error rather than
+# argparse's bare "invalid choice".
+LEGACY_COMMANDS = {
+    # former Python-CLI names
+    "api-test": "api test",
+    "login": "session login",
+    "check-session": "session status",
+    "query": "report list",
+    "list-old-reports": "report list --historical",
+    "report-details": "report show NAME",
+    "create-report": "report create",
+    "update-report": "report update NAME",
+    "submit-report": "report submit NAME",
+    "delete-report": "report delete NAME",
+    "delete-all-reports": "report delete --all-drafts",
+    "delete-all-receipts": "receipt delete --all",
+    "reconcile": "report reconcile NAME",
+    "apply-json": "report apply-json PATH",
+    "allocations": "txn allocations NAME",
+    "add-allocation": "txn allocate NAME INDEX --dept D --fund F",
+    "update-transaction": "txn update NAME INDEX...",
+    "attach-receipt": "txn attach-receipt NAME --merchant M --file F",
+    "list-cards": "card list",
+    "card-details": "card show MERCHANT",
+    "add-delegate": "delegate add WHO",
+    "remove-delegate": "delegate remove WHO",
+    # former launcher-only names
+    "query-old": "report list --historical",
+    "create": "report create",
+    "create-headed": "report create --headed",
+    "delete": "report delete NAME",
+    "run-live": "api test",
+}
+
+# (group, subcommand) -> legacy internal token. Entries whose token depends on a
+# flag are resolved in _legacy_command().
+_COMMAND_MAP = {
+    ("report", "show"): "report-details",
+    ("report", "create"): "create-report",
+    ("report", "update"): "update-report",
+    ("report", "submit"): "submit-report",
+    ("report", "reconcile"): "reconcile",
+    ("report", "apply-json"): "apply-json",
+    ("txn", "update"): "update-transaction",
+    ("txn", "allocations"): "allocations",
+    ("txn", "allocate"): "add-allocation",
+    ("txn", "attach-receipt"): "attach-receipt",
+    ("card", "list"): "list-cards",
+    ("card", "show"): "card-details",
+    ("delegate", "add"): "add-delegate",
+    ("delegate", "remove"): "remove-delegate",
+    ("receipt", "delete"): "delete-all-receipts",
+    ("session", "login"): "login",
+    ("session", "status"): "check-session",
+    ("api", "test"): "api-test",
+}
+
+
+def _legacy_command(args) -> str:
+    """Map the parsed group/subcommand onto the dispatcher's command token."""
+    group = getattr(args, "group", None)
+    if group == "nuke":
+        return "nuke"
+    sub = getattr(args, "subcommand", None)
+    if (group, sub) == ("report", "list"):
+        return "list-old-reports" if args.historical else "query"
+    if (group, sub) == ("report", "delete"):
+        return "delete-all-reports" if args.all_drafts else "delete-report"
+    return _COMMAND_MAP.get((group, sub))
+
+
 def _command_reference() -> str:
-    """Hand-formatted command reference shown in `ccworks --help` / bare `ccworks`."""
+    """Hand-formatted reference shown in `ccworks --help` / bare `ccworks`."""
     rows = [
-        ("Setup / diagnostics", None),
-        ("api-test",            "Run the API client test suite (requires .env with OAuth creds)"),
-        ("login",               "Launch a headed browser for manual Concur authentication"),
-        ("check-session",       "Check whether the saved browser session is still valid"),
-        ("Reports (read)", None),
-        ("query",               "List current draft reports and available receipts"),
-        ("list-old-reports",    "List historical/old expense reports [--filter-view]"),
-        ("report-details",      "Detailed view of a report by name [--deep] [--filter-view]"),
-        ("allocations",         "Show chartstring allocations for a report [--filter-view]"),
-        ("Reports (write)", None),
-        ("create-report",       "Create a draft expense report [--name --purpose --comment --headed]"),
-        ("update-report",       "Update a report's header fields (name/purpose/comment/justification)"),
-        ("update-transaction",  "Update fields on transactions inside a report (by index)"),
-        ("add-allocation",      "Add a chartstring allocation to a transaction (--dept --fund [--prog])"),
-        ("attach-receipt",      "Attach a local receipt file to a transaction (--merchant --receipt-path)"),
-        ("reconcile",           "Reconcile transactions from rules JSON [--reconcile-rules] [--submit]"),
-        ("submit-report",       "Submit an expense report for approval"),
-        ("apply-json",          "Apply an edited report-details JSON back to Concur"),
-        ("delete-report",       "Delete a specific expense report by name"),
-        ("delete-all-reports",  "Delete every draft expense report"),
-        ("Cards", None),
-        ("list-cards",          "List credit-card transactions [--filter-view]"),
-        ("card-details",        "Detailed view of a card transaction [--filter-view]"),
-        ("Receipts", None),
-        ("delete-all-receipts", "Delete every available receipt"),
-        ("Delegates", None),
-        ("add-delegate",        "Add an expense delegate [--delegate-perms prepare submit approve]"),
-        ("remove-delegate",     "Remove an expense delegate"),
-        ("Nuclear", None),
-        ("nuke",                "Delete ALL draft reports AND all available receipts"),
+        ("report", None),
+        ("report list",           "List draft reports [--historical] [--view F]"),
+        ("report show",           "Detail a report by name [--deep] [--view F]"),
+        ("report create",         "Create a draft report [--name --purpose --comment --headed]"),
+        ("report update",         "Update header fields [--name --purpose --comment --justification]"),
+        ("report reconcile",      "Reconcile transactions [--rules F] [--submit]"),
+        ("report submit",         "Submit a report for approval"),
+        ("report delete",         "Delete a report by name, or --all-drafts"),
+        ("report apply-json",     "Apply an edited `report show` JSON back to Concur"),
+        ("txn", None),
+        ("txn update",            "Update transactions by 1-based index [--type --justification ...]"),
+        ("txn allocations",       "List chartstring allocations for a report [--view F]"),
+        ("txn allocate",          "Add a chartstring to a transaction (--dept --fund [--prog])"),
+        ("txn attach-receipt",    "Attach a local receipt file (--merchant --file)"),
+        ("card", None),
+        ("card list",             "List credit-card transactions [--view F]"),
+        ("card show",             "Detail a card transaction by merchant or ID [--view F]"),
+        ("receipt", None),
+        ("receipt delete",        "Delete available receipts (--all)"),
+        ("delegate", None),
+        ("delegate add",          "Add an expense delegate [--can prepare submit approve]"),
+        ("delegate remove",       "Remove an expense delegate"),
+        ("session", None),
+        ("session login",         "Launch a headed browser for manual authentication"),
+        ("session status",        "Check whether the saved session is still valid"),
+        ("api", None),
+        ("api test",              "Run the API client test suite (requires .env OAuth creds)"),
+        ("nuclear", None),
+        ("nuke",                  "Delete ALL draft reports AND all available receipts"),
     ]
     lines = ["Commands:"]
     for name, desc in rows:
@@ -118,16 +199,196 @@ def _command_reference() -> str:
             lines.append("")
             lines.append(f"  {name}:")
         else:
-            lines.append(f"    {name:<21} {desc}")
+            lines.append(f"    {name:<22} {desc}")
     lines.append("")
-    lines.append("Run `ccworks <command> --help` for per-command flags.")
+    lines.append("Run `ccworks <group> <subcommand> --help` for per-command flags.")
     lines.append("Environment: CCWORKS_STATE_DIR overrides ~/Library/Application Support/ccworks.")
     return "\n".join(lines)
+
+
+def build_parser():
+    """Construct the argument parser and the per-group parsers.
+
+    Split out of run_tests() so tests can introspect the command surface
+    without invoking the dispatcher.
+    """
+    parser = argparse.ArgumentParser(
+        prog="ccworks",
+        description="SAP Concur API & Browser Access Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_command_reference(),
+        usage="ccworks [-h] [-v] [--output {json,text}] <command> [args...]",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed log messages on stderr")
+    parser.add_argument("--output", choices=["json", "text"], default="json",
+                        help="Output format (default: json for queries)")
+
+    # `required=False` so bare `ccworks` prints our formatted reference instead
+    # of argparse's "the following arguments are required" error.
+    subparsers = parser.add_subparsers(dest="group", required=False, metavar="<command>",
+                                       help=argparse.SUPPRESS)
+
+    group_parsers = {}
+
+    def add_group(name, help_text):
+        gp = subparsers.add_parser(name, help=help_text)
+        gsub = gp.add_subparsers(dest="subcommand", required=False, metavar="<subcommand>")
+        group_parsers[name] = gp
+        return gsub
+
+    # ---------------- report ----------------
+    report = add_group("report", "Expense reports")
+
+    r_list = report.add_parser("list", help="List reports (drafts by default)")
+    r_list.add_argument("--historical", action="store_true",
+                        help="List historical/processed reports instead of drafts")
+    r_list.add_argument("--view", dest="filter_view", type=str, default=None,
+                        help="Dropdown filter for --historical (default: 'Last 90 Days')")
+
+    r_show = report.add_parser("show", help="Detailed view of a report by name")
+    r_show.add_argument("report_name", type=str, help="Name of the expense report")
+    r_show.add_argument("--deep", action="store_true",
+                        help="Deep scan: open each transaction for full details")
+    r_show.add_argument("--view", dest="filter_view", type=str, default=None,
+                        help="Dropdown filter to look inside")
+
+    r_create = report.add_parser("create", help="Create a draft expense report")
+    r_create.add_argument("--name", type=str, help="Name of report to create")
+    r_create.add_argument("--purpose", type=str, help="Business purpose of report to create")
+    r_create.add_argument("--comment", type=str, help="Additional comment for report to create")
+    r_create.add_argument("--headed", action="store_true",
+                          help="Run browser visibly rather than headlessly")
+
+    r_update = report.add_parser("update", help="Update a report's header fields")
+    r_update.add_argument("report_name", type=str, help="Current name of the expense report")
+    r_update.add_argument("--name", type=str, help="New name for the report")
+    r_update.add_argument("--purpose", type=str, help="New business purpose")
+    r_update.add_argument("--comment", type=str, help="New comment")
+    r_update.add_argument("--justification", type=str,
+                          help="Set both purpose and comment to the same text")
+
+    r_recon = report.add_parser("reconcile", help="Reconcile a report's transactions")
+    r_recon.add_argument("report_name", type=str, help="Name of draft report to reconcile")
+    r_recon.add_argument("--rules", dest="reconcile_rules", type=str, metavar="PATH",
+                         help="Path to a JSON file of reconciliation rules")
+    r_recon.add_argument("--submit", action="store_true",
+                         help="Submit after reconciling (default: review-only)")
+
+    r_submit = report.add_parser("submit", help="Submit an expense report for approval")
+    r_submit.add_argument("report_name", type=str, help="Name of the expense report to submit")
+
+    r_delete = report.add_parser("delete", help="Delete a report by name, or every draft")
+    r_delete.add_argument("report_name", type=str, nargs="?", help="Name of report to delete")
+    r_delete.add_argument("--all-drafts", action="store_true",
+                          help="Delete every draft expense report")
+
+    r_apply = report.add_parser("apply-json", help="Apply edited report JSON back to Concur")
+    r_apply.add_argument("json_path", type=str, help="Path to the edited JSON file")
+
+    # ---------------- txn ----------------
+    txn = add_group("txn", "Transactions within a report")
+
+    t_update = txn.add_parser("update", help="Update fields on transactions inside a report")
+    t_update.add_argument("report_name", type=str, help="Name of the expense report")
+    t_update.add_argument("transaction_indices", type=int, nargs="+",
+                          help="1-based indices of transaction rows (e.g. 1 2 5)")
+    t_update.add_argument("--type", type=str, help="Expense Type")
+    t_update.add_argument("--purpose", type=str, help="Business Purpose")
+    t_update.add_argument("--comment", type=str, help="Comment")
+    t_update.add_argument("--justification", type=str,
+                          help="Set both purpose and comment to the same text")
+
+    t_allocs = txn.add_parser("allocations", help="List chartstring allocations for a report")
+    t_allocs.add_argument("report_name", type=str, help="Name of the expense report")
+    t_allocs.add_argument("--view", dest="filter_view", type=str, default=None,
+                          help="Dropdown filter to look inside")
+
+    t_alloc = txn.add_parser("allocate", help="Add a chartstring allocation to a transaction")
+    t_alloc.add_argument("report_name", type=str, help="Name of the expense report")
+    t_alloc.add_argument("index", type=int, help="1-based index of the transaction row")
+    t_alloc.add_argument("--dept", type=str, required=True,
+                         help="Department (e.g. '(25605) ORF-Technical Support')")
+    t_alloc.add_argument("--fund", type=str, required=True,
+                         help="Fund (e.g. '(A0001) General Fund')")
+    t_alloc.add_argument("--prog", type=str, help="Program (e.g. '(P999) Research')")
+
+    t_attach = txn.add_parser("attach-receipt", help="Attach a receipt file to a transaction")
+    t_attach.add_argument("report_name", type=str,
+                          help="Name of report containing the transaction")
+    t_attach.add_argument("--merchant", type=str, required=True,
+                          help="Merchant name or transaction ID to match")
+    t_attach.add_argument("--file", dest="receipt_path", type=str, required=True, metavar="PATH",
+                          help="Local file path of the receipt")
+
+    # ---------------- card ----------------
+    card = add_group("card", "Credit-card transactions")
+
+    c_list = card.add_parser("list", help="List credit card transactions")
+    c_list.add_argument("--view", dest="filter_view", type=str,
+                        default="All Corporate and Personal Cards",
+                        help="Dropdown filter (default: 'All Corporate and Personal Cards')")
+
+    c_show = card.add_parser("show", help="Detailed view of a card transaction")
+    c_show.add_argument("merchant_or_id", type=str, help="Merchant name or transaction ID")
+    c_show.add_argument("--view", dest="filter_view", type=str,
+                        default="All Corporate and Personal Cards",
+                        help="Dropdown filter (default: 'All Corporate and Personal Cards')")
+
+    # ---------------- receipt ----------------
+    receipt = add_group("receipt", "Available receipts")
+    rc_delete = receipt.add_parser("delete", help="Delete available receipts")
+    rc_delete.add_argument("--all", dest="all_receipts", action="store_true",
+                           help="Delete every available receipt (required)")
+
+    # ---------------- delegate ----------------
+    delegate = add_group("delegate", "Expense delegates")
+    d_add = delegate.add_parser("add", help="Add a new expense delegate")
+    d_add.add_argument("name_or_email", type=str, help="Name or email of delegate")
+    d_add.add_argument("--can", dest="delegate_perms", nargs="+", default=["prepare"],
+                       metavar="PERM",
+                       help="Permissions: prepare, submit, approve (default: prepare)")
+    d_remove = delegate.add_parser("remove", help="Remove an expense delegate")
+    d_remove.add_argument("name_or_email", type=str, help="Name or email of delegate")
+
+    # ---------------- session ----------------
+    session = add_group("session", "Authentication session")
+    session.add_parser("login", help="Launch a headed browser for manual authentication")
+    session.add_parser("status", help="Check whether the saved session is still valid")
+
+    # ---------------- api ----------------
+    api = add_group("api", "Direct API access")
+    api.add_parser("test", help="Run the API client test suite")
+
+    # ---------------- nuke ----------------
+    subparsers.add_parser("nuke", help="Delete all draft reports AND all available receipts")
+
+    return parser, group_parsers
 
 
 def run_tests():
     # Load .env file
     load_dotenv()
+
+    # Hard break on the retired flat command names. Scan the original argv
+    # (before the global-flag hoisting below) so `--output text query` resolves
+    # to `query` rather than to the flag's value.
+    _scan = sys.argv[1:]
+    _idx = 0
+    _first = None
+    while _idx < len(_scan):
+        _arg = _scan[_idx]
+        if _arg == "--output":
+            _idx += 2
+        elif _arg.startswith("-"):
+            _idx += 1
+        else:
+            _first = _arg
+            break
+    if _first in LEGACY_COMMANDS:
+        print(f"ccworks: error: unrecognized command '{_first}'", file=sys.stderr)
+        print(f"\n  Did you mean:  ccworks {LEGACY_COMMANDS[_first]}\n", file=sys.stderr)
+        print("Run `ccworks --help` for the full command reference.", file=sys.stderr)
+        sys.exit(2)
 
     # Preprocess sys.argv to move global arguments (--output, -v, --verbose) right after the script name.
     # This prevents argparse unrecognized argument errors when they are placed after subcommands.
@@ -151,138 +412,46 @@ def run_tests():
             i += 1
     sys.argv = [new_argv[0]] + global_args + new_argv[1:]
 
-    epilog = _command_reference()
-    parser = argparse.ArgumentParser(
-        prog="ccworks",
-        description="SAP Concur API & Browser Access Tool",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=epilog,
-        usage="ccworks [-h] [-v] [--output {json,text}] <command> [args...]",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed log messages on stderr")
-    parser.add_argument("--output", choices=["json", "text"], default="json", help="Output format (default: json for queries)")
-
-    # `required=False` so bare `ccworks` prints our formatted help below
-    # instead of the raw argparse "the following arguments are required" error.
-    subparsers = parser.add_subparsers(dest="command", required=False, metavar="<command>", help=argparse.SUPPRESS)
-
-    # Command: api-test
-    subparsers.add_parser("api-test", help="Run the API client test suite")
-
-    # Command: login
-    subparsers.add_parser("login", help="Launch a headed browser for manual authentication and save session state")
-
-    # Command: check-session
-    subparsers.add_parser("check-session", help="Check whether the currently saved browser session state is valid and active")
-
-    # Command: query
-    subparsers.add_parser("query", help="Query and list current reports and available receipts via browser automation")
-
-    # Command: create-report
-    p_create = subparsers.add_parser("create-report", help="Create a draft expense report using browser automation")
-    p_create.add_argument("--name", type=str, help="Name of report to create")
-    p_create.add_argument("--purpose", type=str, help="Business purpose of report to create")
-    p_create.add_argument("--comment", type=str, help="Additional comment for report to create")
-    p_create.add_argument("--headed", action="store_true", help="Run browser visibly (headed) rather than headlessly")
-
-    # Command: delete-report
-    p_del = subparsers.add_parser("delete-report", help="Delete an expense report by name using browser automation")
-    p_del.add_argument("report_name", type=str, help="Name of report to delete")
-
-    # Command: delete-all-reports
-    subparsers.add_parser("delete-all-reports", help="Delete all draft expense reports via browser")
-
-    # Command: delete-all-receipts
-    subparsers.add_parser("delete-all-receipts", help="Delete all available receipts via browser")
-
-    # Command: nuke
-    subparsers.add_parser("nuke", help="Delete all draft expense reports AND all available receipts via browser")
-
-    # Command: list-old-reports
-    p_list_old = subparsers.add_parser("list-old-reports", help="Query and list historical/old expense reports")
-    p_list_old.add_argument("--filter-view", type=str, default="Last 90 Days", help="Dropdown filter (default: 'Last 90 Days')")
-
-    # Command: report-details
-    p_rep_det = subparsers.add_parser("report-details", help="Get detailed view of an expense report by name")
-    p_rep_det.add_argument("report_name", type=str, help="Name of the expense report")
-    p_rep_det.add_argument("--deep", action="store_true", help="Deep scan: open each transaction to get full details")
-    p_rep_det.add_argument("--filter-view", type=str, help="Dropdown filter to look inside (default: current view)")
-
-    # Command: list-cards
-    p_list_cards = subparsers.add_parser("list-cards", help="Query and list credit card transactions")
-    p_list_cards.add_argument("--filter-view", type=str, default="All Corporate and Personal Cards", help="Dropdown filter (default: 'All Corporate and Personal Cards')")
- 
-    # Command: allocations
-    p_alloc = subparsers.add_parser("allocations", help="Query allocation details (cost centers) for a report")
-    p_alloc.add_argument("report_name", type=str, help="Name of the expense report")
-    p_alloc.add_argument("--filter-view", type=str, help="Dropdown filter to look inside")
-
-    # Command: add-allocation
-    p_add_alloc = subparsers.add_parser("add-allocation", help="Add a new chartstring allocation to a transaction")
-    p_add_alloc.add_argument("report_name", type=str, help="Name of the expense report")
-    p_add_alloc.add_argument("index", type=int, help="1-based index of the transaction row")
-    p_add_alloc.add_argument("--dept", type=str, required=True, help="Department (e.g. '(25605) ORF-Technical Support')")
-    p_add_alloc.add_argument("--fund", type=str, required=True, help="Fund (e.g. '(A0001) General Fund')")
-    p_add_alloc.add_argument("--prog", type=str, help="Program (e.g. '(P999) Research')")
-
-    # Command: card-details
-    p_card_det = subparsers.add_parser("card-details", help="Get detailed view of a card transaction by merchant or ID")
-    p_card_det.add_argument("merchant_or_id", type=str, help="Merchant name or transaction ID")
-    p_card_det.add_argument("--filter-view", type=str, default="All Corporate and Personal Cards", help="Filter view for cards (default: 'All Corporate and Personal Cards')")
-
-    # Command: add-delegate
-    p_add_del = subparsers.add_parser("add-delegate", help="Add a new expense delegate by name or email")
-    p_add_del.add_argument("name_or_email", type=str, help="Name or email of delegate")
-    p_add_del.add_argument("--delegate-perms", nargs="+", default=["prepare"], help="Permissions: prepare, submit, approve")
-
-    # Command: remove-delegate
-    p_rem_del = subparsers.add_parser("remove-delegate", help="Remove an expense delegate by name or email")
-    p_rem_del.add_argument("name_or_email", type=str, help="Name or email of delegate")
-
-    # Command: reconcile
-    p_recon = subparsers.add_parser("reconcile", help="Reconcile transactions of an expense report by name")
-    p_recon.add_argument("report_name", type=str, help="Name of draft report to reconcile")
-    p_recon.add_argument("--reconcile-rules", type=str, help="Path to a JSON file containing reconciliation rules")
-    p_recon.add_argument("--submit", action="store_true", help="Submit the report after reconciling (default: False, review-only)")
-
-    # Command: attach-receipt
-    p_attach = subparsers.add_parser("attach-receipt", help="Attach a receipt file to a transaction in a report")
-    p_attach.add_argument("report_name", type=str, help="Name of report containing the transaction")
-    p_attach.add_argument("--merchant", type=str, required=True, help="Merchant name or transaction ID to match receipt against")
-    p_attach.add_argument("--receipt-path", type=str, required=True, help="Local file path of the receipt")
-
-    # Command: update-transaction
-    p_up_tx = subparsers.add_parser("update-transaction", help="Update fields of an expense/transaction inside a report")
-    p_up_tx.add_argument("report_name", type=str, help="Name of the expense report")
-    p_up_tx.add_argument("transaction_indices", type=int, nargs="+", help="1-based indices of the transaction rows (e.g. 1 2 5)")
-    p_up_tx.add_argument("--type", type=str, help="Expense Type")
-    p_up_tx.add_argument("--purpose", type=str, help="Business Purpose")
-    p_up_tx.add_argument("--comment", type=str, help="Comment")
-    p_up_tx.add_argument("--justification", type=str, help="Shortcut to set both purpose and comment to the same text")
-
-    # Command: update-report
-    p_up_rep = subparsers.add_parser("update-report", help="Update the header fields (name, purpose, comment) of an expense report")
-    p_up_rep.add_argument("report_name", type=str, help="Current name of the expense report")
-    p_up_rep.add_argument("--name", type=str, help="New name for the report")
-    p_up_rep.add_argument("--purpose", type=str, help="New business purpose for the report")
-    p_up_rep.add_argument("--comment", type=str, help="New comment for the report")
-    p_up_rep.add_argument("--justification", type=str, help="Shortcut to set both purpose and comment to the same text")
-
-    # Command: submit-report
-    p_sub = subparsers.add_parser("submit-report", help="Submit an expense report for approval")
-    p_sub.add_argument("report_name", type=str, help="Name of the expense report to submit")
-
-    # Command: apply-json
-    p_apply = subparsers.add_parser("apply-json", help="Apply custom edited JSON report-details to an expense report")
-    p_apply.add_argument("json_path", type=str, help="Path to the edited JSON file")
+    parser, group_parsers = build_parser()
 
     args = parser.parse_args()
 
-    # Bare `ccworks` (or `ccworks -v` etc.) with no subcommand: show the
-    # friendly command reference instead of argparse's terse error.
-    if args.command is None:
+    # Bare `ccworks` (or `ccworks -v` etc.): show the friendly command
+    # reference instead of argparse's terse error.
+    if args.group is None:
         parser.print_help(sys.stderr)
         sys.exit(0)
+
+    # `nuke` is a top-level command and has no subcommand attribute at all.
+    sub = getattr(args, "subcommand", None)
+
+    # A group with no subcommand (`ccworks report`) is a usage error, but the
+    # group's own help is the useful thing to show.
+    if args.group in group_parsers and sub is None:
+        group_parsers[args.group].print_help(sys.stderr)
+        sys.exit(2)
+
+    # Reject flag combinations that would otherwise be silently ignored or
+    # dangerously broad.
+    if (args.group, sub) == ("report", "list"):
+        if args.filter_view and not args.historical:
+            parser.error("--view applies only to `report list --historical`")
+    if (args.group, sub) == ("report", "delete"):
+        if args.all_drafts and args.report_name:
+            parser.error("pass a report NAME or --all-drafts, not both")
+        if not args.all_drafts and not args.report_name:
+            parser.error("`report delete` needs a report NAME, or --all-drafts to remove every draft")
+    if (args.group, sub) == ("receipt", "delete") and not args.all_receipts:
+        parser.error("`receipt delete` requires --all (there is no per-receipt delete)")
+
+    # Normalize the new surface onto the dispatcher's internal command tokens.
+    args.command = _legacy_command(args)
+    if args.command is None:  # unreachable unless a parser lacks a mapping
+        parser.error(f"unhandled command: {args.group} {sub}")
+
+    # Defaults the dispatcher expects, now that --view is shared across groups.
+    if args.command == "list-old-reports" and not args.filter_view:
+        args.filter_view = "Last 90 Days"
 
     # Configure logging based on verbosity
     log_level = logging.INFO if args.verbose else logging.WARNING

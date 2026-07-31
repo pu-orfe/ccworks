@@ -6,10 +6,11 @@
 # `ccworks` is provided directly on PATH by the package — this shell script
 # is not used in that case.
 #
-# In a repo checkout this script keeps the ergonomic `./ccworks <cmd>` UX:
-# it manages the .venv, invokes the CLI via `python -m ccworks.cli`, and only
-# reaches for docker/docker-compose when a test-docker subcommand explicitly
-# asks for them.
+# There is ONE command surface: the Python CLI (`ccworks <group> <subcommand>`).
+# This launcher exists only to manage the dev .venv and to host the
+# checkout-only chores (setup, test targets) that cannot work from an installed
+# package. Every other argument list is forwarded verbatim, so
+# `./ccworks report list` and `ccworks report list` behave identically.
 
 set -euo pipefail
 
@@ -17,47 +18,22 @@ set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 cd "$SCRIPT_DIR"
 
+# Checkout-only chores. Everything not listed here is forwarded to the CLI,
+# which owns command validation, help text, and retired-name errors.
 usage() {
-    echo "Usage: ccworks [command]" >&2
-    echo "Commands:" >&2
-    echo "  setup                 Set up local virtual environment, install requirements, and Playwright browsers" >&2
+    echo "Usage: ./ccworks <command> [args...]" >&2
+    echo "" >&2
+    echo "Dev-checkout tasks (handled by this launcher):" >&2
+    echo "  setup                 Create .venv, install the package editable, install chromium" >&2
     echo "  test-local            Run mock unit tests locally on the host" >&2
-    echo "  test-docker           Build and run mock unit tests inside Docker container" >&2
-    echo "  test-browser-smoke    Run Playwright browser CRUD smoke tests (using local mock server)" >&2
-    echo "  test-reports-live     Run Playwright reports CRUD smoke test on your real Concur account" >&2
-    echo "  test-receipts-live    Run Playwright receipts list/delete smoke test on your real Concur account" >&2
-    echo "  run-live              Run live API integration test (requires configuring .env)" >&2
-    echo "  login                 Launch headed browser for manual Concur authentication and save session state" >&2
-    echo "  check-session         Check whether the currently saved browser session state is valid and active" >&2
-    echo "  query                 Run Playwright query to list current reports and receipts (requires session)" >&2
-    echo "  create                Run Playwright automation to create a draft report headlessly" >&2
-    echo "  create-headed         Run Playwright automation to create a draft report visibly (headed)" >&2
-    echo "  delete \"Name\"         Run Playwright to delete a specific report by name" >&2
-    echo "  delete-all-reports    Run Playwright to delete all draft expense reports" >&2
-    echo "  delete-all-receipts   Run Playwright to delete all available receipts" >&2
-    echo "  nuke                  Run Playwright to delete all reports AND all receipts" >&2
-    echo "  query-old [filter]    Query and list historical/old expense reports (default: 'Last 90 Days')" >&2
-    echo "  report-details \"Name\" [--deep] Get detailed view of an expense report by name (use --deep for full accuracy)" >&2
-    echo "  allocations \"Name\" [--filter-view \"F\"] Query allocation details (cost centers) for a report" >&2
-    echo "  add-allocation \"Name\" <index> --dept \"D\" --fund \"F\" [--prog \"P\"] Add a chartstring allocation to a transaction" >&2
-    echo "  list-cards [filter]   Query and list credit card transactions (default: 'All Corporate and Personal Cards')" >&2
-    echo "  card-details \"Merchant/ID\" [filter] Get detailed view of a card transaction by merchant or ID" >&2
-    echo "  add-delegate \"Name or Email\" [perms...] Add a new expense delegate (permissions: prepare, submit, approve)" >&2
-    echo "  remove-delegate \"Name or Email\" Remove an expense delegate" >&2
-    echo "  reconcile \"Name\" [rules.json] [--submit] Reconcile expense report transactions (default: review-only, --submit to submit)" >&2
-    echo "  attach-receipt \"Name\" \"Merchant\" \"receipt.pdf\" Attach a local receipt file to a report transaction" >&2
-    echo "  update-transaction \"Report\" [indices...] [args...] Update fields of transaction(s) inside a report" >&2
-    echo "  update-report \"Report\" [args...] Update report header fields (name, purpose, comment)" >&2
-    echo "  submit-report \"Report\" Submit an expense report for approval" >&2
-    echo "  apply-json \"file.json\" Apply custom edited JSON report-details back to Concur" >&2
-    exit 1
+    echo "  test-docker           Build and run mock unit tests inside Docker" >&2
+    echo "  test-browser-smoke    Run Playwright browser CRUD smoke tests (local mock server)" >&2
+    echo "  test-reports-live     Run Playwright reports CRUD smoke test against real Concur" >&2
+    echo "  test-receipts-live    Run Playwright receipts smoke test against real Concur" >&2
+    echo "" >&2
+    echo "All other arguments are forwarded to the ccworks CLI:" >&2
+    echo "" >&2
 }
-
-if [ $# -lt 1 ]; then
-    usage
-fi
-
-CMD=$1
 
 # Activate the local dev venv, creating it (with the package installed
 # editable) on first use.
@@ -101,7 +77,15 @@ run_cli() {
     python -m ccworks.cli "$@"
 }
 
-case "$CMD" in
+# Bare `./ccworks`: list the dev tasks, then let the CLI print its own reference.
+if [ $# -lt 1 ]; then
+    usage
+    ensure_venv
+    run_cli
+    exit 0
+fi
+
+case "$1" in
     setup)
         echo "=== Setting up local Python Virtual Environment ===" >&2
         python3 -m venv .venv
@@ -138,234 +122,9 @@ case "$CMD" in
         ensure_venv
         python3 tests/smoke_test_receipts.py "${@:2}"
         ;;
-    run-live)
-        echo "=== Running live integration test ===" >&2
-        if [ ! -f ".env" ]; then
-            echo "[ERROR] .env file not found. Please copy .env.example to .env and populate it with credentials." >&2
-            exit 1
-        fi
-        ensure_venv
-        run_cli api-test
-        ;;
-    login)
-        echo "=== Launching browser login automation ===" >&2
-        ensure_venv
-        run_cli login
-        ;;
-    check-session)
-        ensure_venv
-        run_cli check-session
-        ;;
-    query)
-        echo "=== Querying reports and receipts via browser ===" >&2
-        ensure_venv
-        run_cli query
-        ;;
-    create)
-        echo "=== Running headless browser report creation ===" >&2
-        ensure_venv
-        ARGS=()
-        if [ $# -ge 2 ]; then
-            ARGS+=("--name" "$2")
-        fi
-        if [ $# -ge 3 ]; then
-            ARGS+=("--purpose" "$3")
-        fi
-        if [ $# -ge 4 ]; then
-            ARGS+=("--comment" "$4")
-        fi
-        run_cli create-report "${ARGS[@]}"
-        ;;
-    create-headed)
-        echo "=== Running headed browser report creation ===" >&2
-        ensure_venv
-        ARGS=()
-        if [ $# -ge 2 ]; then
-            ARGS+=("--name" "$2")
-        fi
-        if [ $# -ge 3 ]; then
-            ARGS+=("--purpose" "$3")
-        fi
-        if [ $# -ge 4 ]; then
-            ARGS+=("--comment" "$4")
-        fi
-        run_cli create-report --headed "${ARGS[@]}"
-        ;;
-    delete)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the report name to delete." >&2
-            echo "Usage: ccworks delete \"Report Name\"" >&2
-            exit 1
-        fi
-        echo "=== Deleting report via browser ===" >&2
-        ensure_venv
-        run_cli delete-report "$2"
-        ;;
-    delete-all-reports)
-        ensure_venv
-        run_cli delete-all-reports
-        ;;
-    delete-all-receipts)
-        ensure_venv
-        run_cli delete-all-receipts
-        ;;
-    nuke)
-        ensure_venv
-        run_cli nuke
-        ;;
-    query-old)
-        ensure_venv
-        FILTER="${2:-Last 90 Days}"
-        run_cli list-old-reports --filter-view "$FILTER"
-        ;;
-    report-details)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the report name." >&2
-            echo "Usage: ccworks report-details \"Report Name\" [args...]" >&2
-            exit 1
-        fi
-        ensure_venv
-        shift 1
-        run_cli report-details "$@"
-        ;;
-    allocations)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the report name." >&2
-            echo "Usage: ccworks allocations \"Report Name\" [args...]" >&2
-            exit 1
-        fi
-        ensure_venv
-        shift 1
-        run_cli allocations "$@"
-        ;;
-    add-allocation)
-        if [ $# -lt 3 ]; then
-            echo "Error: Please specify the report name and transaction index." >&2
-            echo "Usage: ccworks add-allocation \"Report Name\" <index> --dept \"D\" --fund \"F\" [--prog \"P\"]" >&2
-            exit 1
-        fi
-        ensure_venv
-        shift 1
-        run_cli add-allocation "$@"
-        ;;
-    list-cards)
-        ensure_venv
-        FILTER="${2:-All Corporate and Personal Cards}"
-        run_cli list-cards --filter-view "$FILTER"
-        ;;
-    card-details)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the card transaction merchant name or transaction ID." >&2
-            echo "Usage: ccworks card-details \"Merchant or ID\" [filter]" >&2
-            exit 1
-        fi
-        ensure_venv
-        FILTER="${3:-All Corporate and Personal Cards}"
-        run_cli card-details "$2" --filter-view "$FILTER"
-        ;;
-    add-delegate)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the delegate name/email." >&2
-            echo "Usage: ccworks add-delegate \"Name or Email\" [permission1 permission2 ...]" >&2
-            exit 1
-        fi
-        ensure_venv
-        NAME="$2"
-        shift 2
-        PERMS=("$@")
-        if [ ${#PERMS[@]} -eq 0 ]; then
-            PERMS=("prepare")
-        fi
-        run_cli add-delegate "$NAME" --delegate-perms "${PERMS[@]}"
-        ;;
-    remove-delegate)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the delegate name/email." >&2
-            echo "Usage: ccworks remove-delegate \"Name or Email\"" >&2
-            exit 1
-        fi
-        ensure_venv
-        run_cli remove-delegate "$2"
-        ;;
-    reconcile)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the report name to reconcile." >&2
-            echo "Usage: ccworks reconcile \"Report Name\" [rules.json] [--submit]" >&2
-            exit 1
-        fi
-        ensure_venv
-        REPORT_NAME="$2"
-        RULES_FILE=""
-        SUBMIT_FLAG=""
-        shift 2
-        while [ $# -gt 0 ]; do
-            if [ "$1" = "--submit" ]; then
-                SUBMIT_FLAG="--submit"
-            else
-                RULES_FILE="$1"
-            fi
-            shift
-        done
-        if [ -n "$RULES_FILE" ] && [ -n "$SUBMIT_FLAG" ]; then
-            run_cli reconcile "$REPORT_NAME" --reconcile-rules "$RULES_FILE" --submit
-        elif [ -n "$RULES_FILE" ]; then
-            run_cli reconcile "$REPORT_NAME" --reconcile-rules "$RULES_FILE"
-        elif [ -n "$SUBMIT_FLAG" ]; then
-            run_cli reconcile "$REPORT_NAME" --submit
-        else
-            run_cli reconcile "$REPORT_NAME"
-        fi
-        ;;
-    attach-receipt)
-        if [ $# -lt 4 ]; then
-            echo "Error: Please specify report name, merchant name, and local receipt file path." >&2
-            echo "Usage: ccworks attach-receipt \"Report Name\" \"Merchant Name\" \"receipt.pdf\"" >&2
-            exit 1
-        fi
-        ensure_venv
-        run_cli attach-receipt "$2" --merchant "$3" --receipt-path "$4"
-        ;;
-    update-transaction)
-        if [ $# -lt 3 ]; then
-            echo "Error: Please specify report name and transaction index." >&2
-            echo "Usage: ccworks update-transaction \"Report Name\" [indices...] [--type \"T\"] [--justification \"J\"]" >&2
-            exit 1
-        fi
-        ensure_venv
-        REPORT_NAME="$2"
-        shift 2
-        run_cli update-transaction "$REPORT_NAME" "$@"
-        ;;
-    update-report)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the report name." >&2
-            echo "Usage: ccworks update-report \"Report Name\" [args...]" >&2
-            exit 1
-        fi
-        ensure_venv
-        REPORT_NAME="$2"
-        shift 2
-        run_cli update-report "$REPORT_NAME" "$@"
-        ;;
-    submit-report)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the report name to submit." >&2
-            echo "Usage: ccworks submit-report \"Report Name\"" >&2
-            exit 1
-        fi
-        ensure_venv
-        run_cli submit-report "$2"
-        ;;
-    apply-json)
-        if [ $# -lt 2 ]; then
-            echo "Error: Please specify the JSON file path." >&2
-            echo "Usage: ccworks apply-json \"path/to/edited.json\"" >&2
-            exit 1
-        fi
-        ensure_venv
-        run_cli apply-json "$2"
-        ;;
     *)
-        usage
+        # Single front door: forward verbatim to the CLI.
+        ensure_venv
+        run_cli "$@"
         ;;
 esac

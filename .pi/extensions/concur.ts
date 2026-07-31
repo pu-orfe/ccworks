@@ -56,7 +56,7 @@ export default function (pi: ExtensionAPI) {
       const filter = params.filter_view || "Last 90 Days";
       const isOld = params.is_old !== false;
       
-      const args = isOld ? ["query-old", filter] : ["query"];
+      const args = isOld ? ["report", "list", "--historical", "--view", filter] : ["report", "list"];
       const output = await runCommand(args);
       
       return {
@@ -80,7 +80,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const filter = params.filter_view || "Last 90 Days";
-      const output = await runCommand(["report-details", params.report_name, filter]);
+      const output = await runCommand(["report", "show", params.report_name, "--view", filter]);
       
       return {
         content: [{ type: "text", text: output }],
@@ -102,7 +102,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const filter = params.filter_view || "All Corporate and Personal Cards";
-      const output = await runCommand(["list-cards", filter]);
+      const output = await runCommand(["card", "list", "--view", filter]);
       
       return {
         content: [{ type: "text", text: output }],
@@ -140,7 +140,7 @@ export default function (pi: ExtensionAPI) {
       fs.writeFileSync(tempFile, JSON.stringify(rulesObj, null, 2));
 
       try {
-        const cmdArgs = ["reconcile", params.report_name, tempFile];
+        const cmdArgs = ["report", "reconcile", params.report_name, "--rules", tempFile];
         if (params.submit) {
           cmdArgs.push("--submit");
         }
@@ -169,10 +169,10 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const output = await runCommand([
-        "attach-receipt",
+        "txn", "attach-receipt",
         params.report_name,
-        params.merchant,
-        params.receipt_path
+        "--merchant", params.merchant,
+        "--file", params.receipt_path
       ]);
       
       return {
@@ -193,10 +193,10 @@ export default function (pi: ExtensionAPI) {
       comment: Type.Optional(Type.String({ description: "Optional comment or description for the report" }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const args = ["create"];
-      if (params.name) args.push(params.name);
-      if (params.purpose) args.push(params.purpose);
-      if (params.comment) args.push(params.comment);
+      const args = ["report", "create"];
+      if (params.name) args.push("--name", params.name);
+      if (params.purpose) args.push("--purpose", params.purpose);
+      if (params.comment) args.push("--comment", params.comment);
       
       const output = await runCommand(args);
       return {
@@ -215,7 +215,7 @@ export default function (pi: ExtensionAPI) {
       report_name: Type.String({ description: "The exact name of the draft report to delete" })
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const output = await runCommand(["delete", params.report_name]);
+      const output = await runCommand(["report", "delete", params.report_name]);
       return {
         content: [{ type: "text", text: output }],
         details: {}
@@ -237,7 +237,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const filter = params.filter_view || "All Corporate and Personal Cards";
-      const output = await runCommand(["card-details", params.merchant_or_id, filter]);
+      const output = await runCommand(["card", "show", params.merchant_or_id, "--view", filter]);
       return {
         content: [{ type: "text", text: output }],
         details: {}
@@ -259,7 +259,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const perms = params.permissions || ["prepare"];
-      const output = await runCommand(["add-delegate", params.name_or_email, ...perms]);
+      const output = await runCommand(["delegate", "add", params.name_or_email, "--can", ...perms]);
       return {
         content: [{ type: "text", text: output }],
         details: {}
@@ -276,7 +276,7 @@ export default function (pi: ExtensionAPI) {
       name_or_email: Type.String({ description: "Full name or email address of the delegate to remove" })
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const output = await runCommand(["remove-delegate", params.name_or_email]);
+      const output = await runCommand(["delegate", "remove", params.name_or_email]);
       return {
         content: [{ type: "text", text: output }],
         details: {}
@@ -307,7 +307,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       try {
-        const output = await runCommand(["check-session"]);
+        const output = await runCommand(["session", "status"]);
         return {
           content: [{ type: "text", text: output }],
           details: { valid: true }
@@ -339,7 +339,7 @@ export default function (pi: ExtensionAPI) {
       comment: Type.Optional(Type.String({ description: "The Comment to apply (pass empty string to clear/delete)" }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const args = ["update-transaction", params.report_name, String(params.transaction_index)];
+      const args = ["txn", "update", params.report_name, String(params.transaction_index)];
       if (params.type !== undefined) {
         args.push("--type", params.type);
       }

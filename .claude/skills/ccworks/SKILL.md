@@ -6,42 +6,20 @@ description: Drive SAP Concur through the ccworks CLI — list, inspect, reconci
 # ccworks — SAP Concur automation
 
 `ccworks` drives Concur via Playwright browser automation against a saved
-session.
+session. Commands are grouped by resource: `ccworks <group> <subcommand>`.
 
-## There are two different command surfaces — pick deliberately
+## Invocation
 
-This is the single most common source of "command not found"/usage errors.
+`ccworks <group> <sub>` (installed) and `./ccworks <group> <sub>` (repo checkout)
+are interchangeable — the launcher forwards arguments verbatim. The launcher
+additionally owns checkout-only chores that do not exist in the CLI: `setup`,
+`test-local`, `test-docker`, `test-browser-smoke`, `test-reports-live`,
+`test-receipts-live`.
 
-| | `./ccworks <cmd>` (zsh launcher, repo checkout) | `ccworks <cmd>` (installed entry point) |
-|---|---|---|
-| What it is | Wrapper that manages `.venv`, then calls `python -m ccworks.cli` | The Python CLI directly |
-| Style | Positional, ergonomic | Flag-based, complete |
-| Unknown command | Prints usage, **exits 1 — no passthrough** | argparse error |
+From a checkout without the package on PATH, use `.venv/bin/python -m
+ccworks.cli` (or just `./ccworks`).
 
-The launcher **renames** some commands and **omits others**. It does not fall
-through, so Python-CLI names fail against it:
-
-- Launcher-only: `setup`, `test-local`, `test-docker`, `test-browser-smoke`,
-  `test-reports-live`, `test-receipts-live`, `run-live`, `query-old`, `create`,
-  `create-headed`, `delete`
-- Python-CLI-only (**fail via `./ccworks`**): `list-old-reports`,
-  `create-report`, `delete-report`, `api-test`
-
-Launcher → CLI renames: `query-old`→`list-old-reports`, `create`/`create-headed`
-→`create-report`, `delete`→`delete-report`, `run-live`→`api-test`.
-
-**Default to the Python CLI** — it is the complete surface. In a repo checkout
-that is `.venv/bin/python -m ccworks.cli <cmd>` (after `./ccworks setup`); if the
-package is installed, plain `ccworks <cmd>`. Use `./ccworks` only for `setup`
-and the `test-*` targets, which exist nowhere else.
-
-Verify which you have before composing a command:
-
-```sh
-command -v ccworks >/dev/null && echo installed || echo "checkout: use .venv/bin/python -m ccworks.cli"
-```
-
-Global flags work anywhere in the Python CLI (it hoists them): `-v/--verbose`,
+Global flags work anywhere in the argument list: `-v/--verbose`,
 `--output {json,text}` (default `json`).
 
 ## Read stdout, ignore stderr
@@ -50,22 +28,22 @@ Global flags work anywhere in the Python CLI (it hoists them): `-v/--verbose`,
 stdout; use `--output text` when the user wants prose rather than data:
 
 ```sh
-ccworks list-old-reports --filter-view "Last 90 Days" 2>/dev/null | jq '.'
+ccworks report list --historical --view "Last 90 Days" 2>/dev/null | jq '.'
 ```
 
 ## Session first — you cannot log in yourself
 
-Run `check-session` before any Concur operation.
+Run `ccworks session status` before any Concur operation.
 
-`login` opens a **headed browser for manual SSO** and needs a human. On an
-expired session the CLI offers interactive re-login *only if stdin is a TTY* —
+`session login` opens a **headed browser for manual SSO** and needs a human. On
+an expired session the CLI offers interactive re-login *only if stdin is a TTY* —
 under agent Bash it is not, so it prints `[SESSION EXPIRED]` to stderr and exits
 `1`.
 
 Do not retry and do not script around it. Ask the user:
 
-> Your Concur session expired. Run `! ./ccworks login` and complete the SSO
-> prompt, then I'll re-run the command.
+> Your Concur session expired. Run `! ./ccworks session login` and complete the
+> SSO prompt, then I'll re-run the command.
 
 Session state is `$CCWORKS_STATE_DIR/concur_session.json`, defaulting to
 `~/Library/Application Support/ccworks` (macOS) or `$XDG_STATE_HOME/ccworks`
@@ -76,67 +54,80 @@ Session state is `$CCWORKS_STATE_DIR/concur_session.json`, defaulting to
 
 These touch real financial records or notify real people. Say exactly what will
 happen and get explicit confirmation **before** running them — never as a side
-effect of a broader request:
+effect of a broader request. Never run one as a smoke test; use `--help` to
+check that a command parses.
 
 | Command | Why |
 |---|---|
-| `submit-report`, `reconcile --submit` | Sends the report to approvers. Outward-facing, not silently undoable. |
-| `delete-report` / launcher `delete` | Deletes one report. |
-| `delete-all-reports` | Deletes **every** draft report. |
-| `delete-all-receipts` | Deletes **every** available receipt. |
+| `report submit`, `report reconcile --submit` | Sends the report to approvers. Outward-facing, not silently undoable. |
+| `report delete NAME` | Deletes one report. |
+| `report delete --all-drafts` | Deletes **every** draft report. |
+| `receipt delete --all` | Deletes **every** available receipt. |
 | `nuke` | Both of the above at once. |
 
-`reconcile` without `--submit` is review-only and leaves the report in draft.
-Prefer it, show the user the result, then ask before submitting.
+`report reconcile` without `--submit` is review-only and leaves the report in
+draft. Prefer it, show the user the result, then ask before submitting.
 
 ## Addressing things
 
 - Reports are addressed **by name**, not ID. Always quote:
-  `ccworks report-details "Reconciliation Report A"`
-- Transaction indices are **1-based**, and several commands accept many:
-  `ccworks update-transaction "Report A" 1 2 5 --justification "Conference travel"`
-- If a name is ambiguous or unverified, run `query` (drafts) or
-  `list-old-reports` (historical) and confirm the exact string first.
+  `ccworks report show "Reconciliation Report A"`
+- Transaction indices are **1-based**, and `txn update` accepts several:
+  `ccworks txn update "Report A" 1 2 5 --justification "Conference travel"`
+- If a name is ambiguous or unverified, run `report list` (drafts) or
+  `report list --historical` and confirm the exact string first.
 
-## Commands (Python CLI names and flags)
+## Commands
 
-**Diagnostics** — `api-test` (needs `.env` OAuth creds), `login`, `check-session`
-
-**Read** — `query` (drafts + available receipts),
-`list-old-reports [--filter-view]`,
-`report-details <name> [--deep] [--filter-view]`,
-`allocations <name> [--filter-view]`
+**report** — `list [--historical] [--view F]`, `show NAME [--deep] [--view F]`,
+`create [--name --purpose --comment --headed]`,
+`update NAME [--name --purpose --comment --justification]`,
+`reconcile NAME [--rules PATH] [--submit]`, `submit NAME`,
+`delete NAME | --all-drafts`, `apply-json PATH`
 
 `--deep` opens every transaction for full detail; much slower, so use it only
-when row summaries are insufficient.
+when row summaries are insufficient. `--view` is valid only with `--historical`
+— passing it to a draft listing is a usage error, not a silent no-op.
 
-**Write** — `create-report [--name --purpose --comment --headed]`,
-`update-report <name> [--name --purpose --comment --justification]`,
-`update-transaction <name> <idx...> [--type --purpose --comment --justification]`,
-`add-allocation <name> <idx> --dept --fund [--prog]`,
-`attach-receipt <name> --merchant --receipt-path`,
-`reconcile <name> [--reconcile-rules <path>] [--submit]`, `submit-report <name>`,
-`apply-json <path>`, `delete-report <name>`, `delete-all-reports`
+**txn** — `update NAME IDX... [--type --purpose --comment --justification]`,
+`allocations NAME [--view F]`, `allocate NAME IDX --dept D --fund F [--prog P]`,
+`attach-receipt NAME --merchant M --file PATH`
 
 `--justification` sets business purpose *and* comment to the same text.
 
-**Cards** — `list-cards [--filter-view]` (default
-`"All Corporate and Personal Cards"`), `card-details <merchant-or-id>
-[--filter-view]`
+**card** — `list [--view F]`, `show MERCHANT_OR_ID [--view F]` (default view
+`"All Corporate and Personal Cards"`)
 
-**Receipts** — `delete-all-receipts`
+**receipt** — `delete --all` (the `--all` flag is required; there is no
+per-receipt delete)
 
-**Delegates** — `add-delegate <name-or-email> [--delegate-perms prepare submit
-approve]` (default `prepare`), `remove-delegate <name-or-email>`
+**delegate** — `add WHO [--can prepare submit approve]` (default `prepare`),
+`remove WHO`
 
-Note `allocations` takes `--filter-view`, not a positional filter — the
-launcher's own usage text wrongly shows `allocations "Name" [filter]`.
+**session** — `login`, `status`
+
+**api** — `test` (needs `.env` OAuth creds)
+
+**nuke** — top-level; deletes all drafts and all receipts
+
+## Retired names
+
+The old flat commands were removed. They exit `2` and name their replacement, so
+if you see `unrecognized command`, read the suggestion rather than guessing:
+`query`→`report list`, `query-old`/`list-old-reports`→`report list --historical`,
+`report-details`→`report show`, `create`/`create-report`→`report create`,
+`delete`/`delete-report`→`report delete`, `check-session`→`session status`,
+`login`→`session login`, `add-allocation`→`txn allocate`,
+`list-cards`→`card list`, `card-details`→`card show`, `api-test`→`api test`.
+
+Flags moved too: `--filter-view`→`--view`, `--receipt-path`→`--file`,
+`--reconcile-rules`→`--rules`, `--delegate-perms`→`--can`.
 
 ## Reconcile rules JSON
 
-`--reconcile-rules <path>` takes an object keyed by **merchant substring**,
-matched case-insensitively; the first key that matches wins, so order
-most-specific first:
+`--rules PATH` takes an object keyed by **merchant substring**, matched
+case-insensitively; the first key that matches wins, so order most-specific
+first:
 
 ```json
 {
@@ -154,13 +145,10 @@ All fields optional; `receipt` is an accepted alias for `receipt_path`.
 Unmatched transactions are **skipped with a warning on stderr** — after
 reconciling, report which rows were skipped instead of implying full coverage.
 
-(Via the launcher the rules file is positional: `./ccworks reconcile "Name"
-rules.json [--submit]`.)
-
 ## Working style
 
-- Read before write: `report-details` first, then update.
+- Read before write: `report show` first, then update.
 - One report at a time; these are browser-driven and slow. Batch indices into a
-  single `update-transaction` rather than looping the command.
+  single `txn update` rather than looping the command.
 - Report failures verbatim, including stderr skip warnings. A command that
   "succeeded" while matching zero transactions did nothing.

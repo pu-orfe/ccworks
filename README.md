@@ -32,7 +32,7 @@ brew install ccworks
 ```
 
 This gives you a `ccworks` command anywhere on your PATH. The first time you
-run a browser-based command (e.g. `ccworks login`), ccworks will prompt to
+run a browser-based command (e.g. `ccworks session login`), ccworks will prompt to
 download Playwright's chromium browser (~180 MB) into
 `~/Library/Caches/ms-playwright` — a one-time step.
 
@@ -48,35 +48,76 @@ cd ccworks
 ./ccworks setup       # creates .venv, `pip install -e .`, installs chromium
 ```
 
-### Two command surfaces
+### One command surface
 
-There are two ways to invoke ccworks, and they do **not** accept the same
-commands:
-
-| | `./ccworks <cmd>` | `ccworks <cmd>` |
-| :--- | :--- | :--- |
-| Source | The zsh launcher in a repo checkout | Entry point from Homebrew / `pip install` |
-| Role | Manages `.venv`, then calls `python -m ccworks.cli` | The Python CLI itself |
-| Style | Positional and ergonomic | Flag-based and complete |
-
-The launcher renames some commands, adds its own, and **exits 1 with usage on
-anything it doesn't recognize — it does not pass unknown commands through.**
-
-* **Launcher only** (no equivalent in the installed CLI): `setup`, `test-local`,
-  `test-docker`, `test-browser-smoke`, `test-reports-live`,
-  `test-receipts-live`, `run-live`, `query-old`, `create`, `create-headed`,
-  `delete`
-* **Installed CLI only** (these *fail* via `./ccworks`): `list-old-reports`,
-  `create-report`, `delete-report`, `api-test`
-* **Renames**: `query-old`→`list-old-reports`, `create`/`create-headed`→
-  `create-report`, `delete`→`delete-report`, `run-live`→`api-test`
-
-Examples below use `./ccworks` launcher syntax unless noted. From a checkout you
-can always reach the full flag-based CLI directly:
+`ccworks` exposes a single set of commands, grouped by resource as
+`<group> <subcommand>` — the convention used by `gh`, `kubectl`, and modern
+`docker`:
 
 ```bash
-.venv/bin/python -m ccworks.cli list-old-reports --filter-view "All Reports"
+ccworks report list
+ccworks report show "Q1 Travel" --deep
+ccworks card show "Office Depot"
+ccworks session status
 ```
+
+The two entry points are interchangeable and accept identical arguments:
+
+| | `ccworks <group> <sub>` | `./ccworks <group> <sub>` |
+| :--- | :--- | :--- |
+| Source | Entry point from Homebrew / `pip install` | The zsh launcher in a repo checkout |
+| Behaviour | The CLI itself | Manages `.venv`, then forwards **verbatim** to the CLI |
+
+The launcher owns only the checkout-only chores that cannot work from an
+installed package — `setup`, `test-local`, `test-docker`,
+`test-browser-smoke`, `test-reports-live`, `test-receipts-live`. Everything else
+it passes straight through, so the two forms behave identically.
+
+Run `ccworks` for the grouped reference, or `ccworks <group> <sub> --help` for a
+command's flags.
+
+### Retired command names
+
+The earlier flat names (and the launcher's separate aliases for them) were
+removed in favour of the single surface. They now exit `2` and name their
+replacement:
+
+```
+$ ccworks query-old
+ccworks: error: unrecognized command 'query-old'
+
+  Did you mean:  ccworks report list --historical
+```
+
+| Retired | Replacement |
+| :--- | :--- |
+| `query` | `report list` |
+| `query-old`, `list-old-reports` | `report list --historical` |
+| `report-details` | `report show` |
+| `create`, `create-report` | `report create` |
+| `create-headed` | `report create --headed` |
+| `update-report` | `report update` |
+| `submit-report` | `report submit` |
+| `delete`, `delete-report` | `report delete` |
+| `delete-all-reports` | `report delete --all-drafts` |
+| `reconcile` | `report reconcile` |
+| `apply-json` | `report apply-json` |
+| `update-transaction` | `txn update` |
+| `allocations` | `txn allocations` |
+| `add-allocation` | `txn allocate` |
+| `attach-receipt` | `txn attach-receipt` |
+| `list-cards` | `card list` |
+| `card-details` | `card show` |
+| `delete-all-receipts` | `receipt delete --all` |
+| `add-delegate` | `delegate add` |
+| `remove-delegate` | `delegate remove` |
+| `login` | `session login` |
+| `check-session` | `session status` |
+| `api-test`, `run-live` | `api test` |
+
+Flags were renamed to match: `--filter-view` is now `--view`,
+`--receipt-path` is `--file`, `--reconcile-rules` is `--rules`, and
+`--delegate-perms` is `--can`.
 
 ### Configure credentials
 
@@ -98,306 +139,191 @@ CONCUR_USER_LOGIN_ID=target_user_email@company.com
 
 ---
 
-## 📂 Run Options
+## 📂 Command Reference
 
-### Command Table
+### Dev-checkout tasks (`./ccworks` only)
 
-| Run Mode | Command | Scope / Notes |
+| Command | Scope / Notes |
+| :--- | :--- |
+| `./ccworks setup` | Create `.venv`, install the package editable, install chromium. |
+| `./ccworks test-local` | Run mock unit tests locally using `.venv`. |
+| `./ccworks test-docker` | Run mock unit tests in Docker (offline, no credentials needed). |
+| `./ccworks test-browser-smoke` | Playwright browser CRUD smoke tests against the local mock server. |
+| `./ccworks test-reports-live` | Playwright reports CRUD smoke test against your real Concur account. |
+| `./ccworks test-receipts-live` | Playwright receipts smoke test against your real Concur account. |
+
+### Commands
+
+| Group | Command | Scope / Notes |
 | :--- | :--- | :--- |
-| **Containerized Unit Tests** | `./ccworks test-docker` | Runs mock tests in Docker (Offline, credentials not needed). |
-| **Local Unit Tests** | `./ccworks test-local` | Runs mock tests locally using `.venv`. |
-| **Live API Test** | `./ccworks run-live` | Tests token retrieval, report listing, and report creation. |
-| **Headed Browser Login** | `./ccworks login` | Boots browser window for manual login, saves authentication state. |
-| **Headless Browser Creation**| `./ccworks create` | Programmatically logs in using saved state and creates a draft report. |
-| **Visible Browser Creation** | `./ccworks create-headed` | Performs browser creation visibly on screen (useful for debugging). |
-| **List Historical Reports** | `./ccworks query-old [filter]` | Query and list historical reports (e.g. "Last 90 Days"). |
-| **Report Details** | `./ccworks report-details "Name" [--deep]` | Fetch line-item details of a specific report. Use `--deep` for full accuracy. |
-| **List Card Transactions** | `./ccworks list-cards [filter]` | List credit card transactions under specific activity filters. |
-| **Card Transaction Details** | `./ccworks card-details "Merchant/ID" [filter]` | Fetch details for a card transaction by name or ID. |
-| **Add Expense Delegate** | `./ccworks add-delegate "Name" [perms...]` | Add delegate and assign permissions (prepare, submit, approve). |
-| **Remove Expense Delegate** | `./ccworks remove-delegate "Name"` | Remove expense delegate from settings page. |
-| **Reconcile Report** | `./ccworks reconcile "Name" [rules.json] [--submit]` | Reconcile report transactions with rules (review-only by default). |
-| **Attach Receipt to Transaction** | `./ccworks attach-receipt "Name" "Merchant" "receipt.pdf"` | Attach local receipt file directly to a transaction row in a report. |
-| **Update Report Transaction** | `./ccworks update-transaction "Name" [indices...] [args...]` | Bulk update fields (type, justification) of transaction rows in a report. |
-| **Update Report Header** | `./ccworks update-report "Name" [--name "New"] [--purpose "P"] [--comment "C"]` | Update report header fields like name, purpose, and comment. |
-| **Submit Report** | `./ccworks submit-report "Name"` | Finalize and submit an expense report for approval. |
-| **List Transaction Allocations** | `./ccworks allocations "Name"` | List chartstring allocations (Dept, Fund, etc) for a report. |
-| **Add Transaction Allocation** | `./ccworks add-allocation "Name" <idx> --dept "D" --fund "F"` | Programmatically set chartstring values for a transaction. |
+| **report** | `report list [--historical] [--view F]` | List draft reports, or historical ones with `--historical`. |
+| | `report show NAME [--deep] [--view F]` | Line-item details. `--deep` opens each transaction (slower, fully accurate). |
+| | `report create [--name N] [--purpose P] [--comment C] [--headed]` | Create a draft report. |
+| | `report update NAME [--name --purpose --comment --justification]` | Update header fields. |
+| | `report reconcile NAME [--rules PATH] [--submit]` | Reconcile transactions; review-only unless `--submit`. |
+| | `report submit NAME` | Submit for approval. |
+| | `report delete NAME` / `report delete --all-drafts` | Delete one report, or every draft. |
+| | `report apply-json PATH` | Apply an edited `report show` JSON back to Concur. |
+| **txn** | `txn update NAME IDX... [--type --purpose --comment --justification]` | Update one or more transactions by 1-based index. |
+| | `txn allocations NAME [--view F]` | List chartstring allocations (Dept, Fund, Program). |
+| | `txn allocate NAME IDX --dept D --fund F [--prog P]` | Add a chartstring to a transaction. |
+| | `txn attach-receipt NAME --merchant M --file PATH` | Attach a local receipt file to a transaction row. |
+| **card** | `card list [--view F]` | List credit-card transactions. |
+| | `card show MERCHANT_OR_ID [--view F]` | Details for one card transaction. |
+| **receipt** | `receipt delete --all` | Delete every available receipt. `--all` is required. |
+| **delegate** | `delegate add WHO [--can prepare submit approve]` | Add an expense delegate (default: `prepare`). |
+| | `delegate remove WHO` | Remove an expense delegate. |
+| **session** | `session login` | Headed browser for manual SSO; saves session state. |
+| | `session status` | Check whether the saved session is still valid. |
+| **api** | `api test` | Run the API client test suite (needs `.env` OAuth creds). |
+| — | `nuke` | Delete ALL draft reports **and** all available receipts. |
+
+Global flags work anywhere in the argument list: `-v/--verbose` (logs to
+stderr), `--output {json,text}` (default `json`).
+
+**stdout is data, stderr is diagnostics.** Query commands print JSON on stdout
+while logs, spinners, and session warnings go to stderr, so `2>/dev/null` is
+safe when piping to `jq`.
 
 ---
 
-## 🔍 Detailed Usage Examples & API Reference
+## 🔍 Detailed Usage Examples
 
-### 1. Historical Expense Reports
+### 1. Expense reports
 
-Concur separates active draft reports from older, submitted, or processed reports via dropdown filters. The browser client automates navigating the reports grid, updating the view filter, and clicking individual cards to extract details.
+Concur separates active drafts from older submitted/processed reports behind
+dropdown filters. `--historical` switches to the latter, and `--view` picks the
+filter.
 
-* **List Old Reports:**
-  ```bash
-  # Query using the default 'Last 90 Days' filter
-  ./ccworks query-old
-  
-  # Specify a custom filter (e.g., 'All Reports')
-  ./ccworks query-old "All Reports"
-  ```
-  *Output Example:*
-  ```text
-  [SUCCESS] Discovered 2 historical report(s):
-    1. Old Lodging Report 2025 (Purpose: FY2025 Conference)
-    2. Q1 Travel Report (Purpose: Client Visits Q1)
-  ```
+```bash
+# Current drafts (and available receipts)
+ccworks report list
 
-* **Get Report Details:**
-  ```bash
-  # Get line items and header details for a specific report
-  ./ccworks report-details "Old Lodging Report 2025" --deep
-  ```
-  *Output Example:*
-  ```text
-  [SUCCESS] Details retrieved:
-    Name:     Old Lodging Report 2025
-    Number:   REP-100200
-    Purpose:  FY2025 Conference
-    Comment:  Approved & Paid
-    Expenses: (2 items)
-      - Date: 2026-06-12 | Type: Lodging | Amount: $150.00 | Merchant: Hilton
-      - Date: 2026-06-13 | Type: Meal | Amount: $45.20 | Merchant: Italian Bistro
-  ```
+# Historical reports, default 'Last 90 Days'
+ccworks report list --historical
 
-### 2. Credit Card Transactions
+# Historical reports under a specific filter
+ccworks report list --historical --view "All Reports"
 
-Automates listing and viewing credit card transactions inside the **Available Expenses** dashboard section. Supports selecting view activities such as "All Corporate and Personal Cards" or "All Purchasing Cards".
+# Line items for one report; --deep opens each transaction
+ccworks report show "Old Lodging Report 2025" --deep
+```
 
-* **List Card Transactions:**
-  ```bash
-  # List corporate and personal cards (default)
-  ./ccworks list-cards "All Corporate and Personal Cards"
-  
-  # List purchasing cards
-  ./ccworks list-cards "All Purchasing Cards"
-  ```
-  *Output Example:*
-  ```text
-  [SUCCESS] Discovered 1 transaction(s):
-    1. Office Depot - $189.99
-  ```
+`--view` applies only with `--historical`; passing it to a draft listing is a
+usage error rather than a silently ignored flag.
 
-* **Get Transaction Details:**
-  ```bash
-  ./ccworks card-details "Office Depot" "All Purchasing Cards"
-  ```
-  *Output Example:*
-  ```text
-  [SUCCESS] Transaction details:
-    Merchant:     Office Depot
-    Date:         2026-06-18
-    Amount:       $189.99
-    Transaction ID: TX_5002
-    Card Program: Purchasing Card
-  ```
+```bash
+# Create, retitle, then submit
+ccworks report create --name "Q3 Travel" --purpose "INFORMS 2026"
+ccworks report update "Q3 Travel" --justification "Conference travel"
+ccworks report submit "Q3 Travel"
 
-### 3. Expense Delegates Settings
+# Delete one report, or clear every draft
+ccworks report delete "Q3 Travel"
+ccworks report delete --all-drafts
+```
 
-Automates adding and removing delegates, plus managing permissions in the profile settings (`/profile/editdelegates.asp`).
+### 2. Credit card transactions
 
-* **Add Expense Delegate:**
-  Add a delegate by name or email, specifying checkboxes for permissions (`prepare`, `submit`, `approve`).
-  ```bash
-  # Add John Doe with Prepare and Submit permissions
-  ./ccworks add-delegate "John Doe" prepare submit
-  
-  # Add Jane Smith with Prepare and Approve permissions
-  ./ccworks add-delegate "Jane Smith" prepare approve
-  ```
+```bash
+ccworks card list
+ccworks card list --view "All Purchasing Cards"
+ccworks card show "Office Depot" --view "All Purchasing Cards"
+```
 
-* **Remove Expense Delegate:**
-  Remove a delegate by selecting their checkbox, triggering 'Delete', and saving the profiles page.
-  ```bash
-  ./ccworks remove-delegate "John Doe"
-  ```
+### 3. Expense delegates
 
-### 4. Month-End Expense Reconciliation
+```bash
+ccworks delegate add "John Doe" --can prepare submit
+ccworks delegate add "jane@example.com" --can prepare approve
+ccworks delegate remove "John Doe"
+```
 
-Reconciliation is a critical month-end task. The client navigates inside a report, reads the merchant list, and maps matching rules to fill in Expense Types, Business Purposes, Comments, and Allocation Codes for every transaction row. By default, it runs in **review-only mode** (leaving the report as a draft for your manual review). To automatically submit the report, pass the `--submit` flag.
+### 4. Month-end reconciliation
 
-* **Reconcile Report (Review-Only / Default):**
-  ```bash
-  # Reconcile using default built-in matching rules (does not submit)
-  ./ccworks reconcile "Reconciliation Report A"
-  
-  # Reconcile using custom rules (does not submit)
-  ./ccworks reconcile "Reconciliation Report A" my_recon_rules.json
-  ```
+`report reconcile` is review-only by default, leaving the report in draft so you
+can inspect it before submitting.
 
-* **Reconcile and Automatically Submit Report:**
-  ```bash
-  # Reconcile and submit immediately
-  ./ccworks reconcile "Reconciliation Report A" --submit
-  
-  # Reconcile using custom rules and submit
-  ./ccworks reconcile "Reconciliation Report A" my_recon_rules.json --submit
-  ```
-  
-  *Example `my_recon_rules.json` file:*
-  ```json
-  {
-    "Uber": {
-      "expense_type": "Ground Transportation",
-      "business_purpose": "Client travel to office",
-      "comment": "Uber Ride",
-      "allocation_code": "COST-CENTER-101"
-    },
-    "Office Depot": {
-      "expense_type": "Office Supplies",
-      "business_purpose": "Team whiteboard supplies",
-      "comment": "Pens and notebooks",
-      "allocation_code": "COST-CENTER-102"
-    }
+```bash
+# Review-only
+ccworks report reconcile "Reconciliation Report A"
+
+# With explicit rules
+ccworks report reconcile "Reconciliation Report A" --rules my_recon_rules.json
+
+# Reconcile and submit in one step
+ccworks report reconcile "Reconciliation Report A" --rules my_recon_rules.json --submit
+```
+
+Rules are a JSON object keyed by **merchant substring**, matched
+case-insensitively; the first matching key wins, so order the most specific
+first. Transactions matching no rule are skipped with a warning on stderr —
+check those rather than assuming full coverage.
+
+```json
+{
+  "United Airlines": {
+    "expense_type": "Airfare",
+    "business_purpose": "INFORMS 2026 travel",
+    "comment": "Economy, booked in advance",
+    "allocation_code": "(25605) ORF-Technical Support",
+    "receipt_path": "/Users/you/receipts/united.pdf"
   }
-  ```
+}
+```
 
-### 5. Match & Attach Receipt Directly to Transaction
+All fields are optional; `receipt` is accepted as an alias for `receipt_path`.
 
-Matching receipt PDFs or images to individual card transactions can be automated. Playwright navigates into the expense report detail row matching your merchant name, locates the hidden file input element, and uploads the local file.
+### 5. Attach a receipt to a transaction
 
-* **Attach Local Receipt to Report Expense:**
-  ```bash
-  ./ccworks attach-receipt "Receipt Upload Report A" "Uber" "receipts/uber_ride_receipt.pdf"
-  ```
+```bash
+ccworks txn attach-receipt "Receipt Upload Report A" \
+    --merchant "Uber" \
+    --file receipts/uber_ride_receipt.pdf
+```
 
-### 6. Read and Write Report & Transaction Fields (CRUD)
+### 6. Report and transaction fields (CRUD)
 
-You can read or write individual transaction fields (Expense Type, Business Purpose, and Comments) as well as the main report header fields.
+Transaction indices are **1-based**, and `txn update` accepts several at once —
+batch them rather than looping the command, since each invocation drives a
+browser.
 
-* **Update Report Header (Write/Update):**
-  ```bash
-  # Update report purpose and comment using the justification shortcut
-  ./ccworks update-report "Transaction Report" --justification "Project Alpha research"
+```bash
+# Header fields
+ccworks report update "Transaction Report" --justification "Project Alpha research"
+ccworks report update "Old Name" --name "New Name" --purpose "Updated purpose"
 
-  # Rename a report and update its purpose
-  ./ccworks update-report "Old Name" --name "New Name" --purpose "Updated purpose"
-  ```
+# Several transactions at once
+ccworks txn update "Transaction Report" 1 2 3 --type "Software" --justification "Required for project X"
 
-* **Update Transaction fields (Write/Update):**
-  ```bash
-  # Update Expense Type and Justification for multiple items (indices 1, 2, and 3)
-  ./ccworks update-transaction "Transaction Report" 1 2 3 --type "Software" --justification "Required for project X"
+# A single transaction, distinct purpose and comment
+ccworks txn update "Transaction Report" 1 --type "Ground Transportation" \
+    --purpose "Meeting client" --comment "Uber ride"
 
-  # Update specific fields for a single item
-  ./ccworks update-transaction "Transaction Report" 1 --type "Ground Transportation" --purpose "Meeting client" --comment "Uber ride"
-  ```
+# Clear a field
+ccworks txn update "Transaction Report" 1 --comment ""
+```
 
-* **Remove/Clear fields (Delete/Remove):**
-  ```bash
-  # Clear a transaction comment field by passing an empty string
-  ./ccworks update-transaction "Transaction Report" 1 --comment ""
-  ```
+Round-trip a whole report through JSON:
 
-* **Bulk JSON Updates & Receipt Uploads (apply-json):**
-  You can export report details to a JSON file, edit it locally (manually or programmatically), and apply all updates—including bulk receipt file uploads—back to Concur in **one single, high-performance browser session**.
+```bash
+ccworks report show "Statement Report 06/16 - 07/31" --deep --output json > report.json
+# edit report.json
+ccworks report apply-json report.json
+```
 
-  ```bash
-  # 1. Export deep details of a report to a local JSON file
-  ./ccworks report-details "Statement Report 06/16 - 07/31" --deep --output json > report.json
+### 7. Transaction allocations (chartstrings)
 
-  # 2. Edit report.json locally (see JSON schema below)
-  # 3. Apply all changes and upload receipts headlessly in a single run
-  ./ccworks apply-json report.json
-  ```
+```bash
+# Read current allocations
+ccworks txn allocations "Project Alpha Report"
 
-  #### JSON Expense Schema:
-  Within the `"expenses"` list of your edited JSON file, you can specify:
-  * `expense_type` (Optional): The category/classification name (e.g., `"Software"`).
-  * `business_purpose` (Optional): Business justification.
-  * `comment` (Optional): Custom transaction notes.
-  * `receipt_file_path` / `receipt_file` (Optional): Fully absolute or relative path to a local receipt file (PDF/PNG/JPEG) to upload and attach to this transaction. **This field is entirely optional**—if omitted or set to `null`/empty, no upload is performed and only text fields are updated.
-
-  Example snippet of a modified `report.json`:
-  ```json
-  {
-    "report_name": "Statement Report 06/16 - 07/31",
-    "expenses": [
-      {
-        "index": 0,
-        "expense_type": "Software",
-        "business_purpose": "API credits for development",
-        "comment": "Antigravity billing",
-        "receipt_file_path": "/Users/bino/Downloads/invoice_anthropic.pdf"
-      },
-      {
-        "index": 1,
-        "expense_type": "Computer Peripherals (OIT use only)",
-        "business_purpose": "External monitor for workstation",
-        "comment": "Skipping receipt file path, only updating text fields."
-      }
-    ]
-  }
-  ```
-
-* **Verify / Read details (Read):**
-  ```bash
-  # Use --deep to see full line-item justifications
-  ./ccworks report-details "Transaction Report" --deep
-  ```
-
-* **Submit Report (Finalize):**
-  ```bash
-  # Finalize and submit the report for approval
-  ./ccworks submit-report "Transaction Report"
-  ```
-  *Output Example:*
-  ```text
-  [SUCCESS] Details retrieved:
-    Name:     Transaction Report
-    Number:   REP-8899
-    Purpose:  Client lunch
-    Comment:  N/A
-    Expenses: (2 items)
-      - Date: 2026-06-12 | Type: Ground Transportation | Amount: $24.50 | Merchant: Uber
-        Type:             Ground Transportation
-        Business Purpose: Meeting client for lunch
-        Comment:          Test comment
-   ```
-
-### 7. Transaction Allocations (Chartstrings)
-
-Automates reading and writing **Chartstrings** (Department, Fund, Program, etc.) for individual transaction rows. This is essential for organizations that require granular cost-center tracking.
-
-* **List Current Allocations:**
-  ```bash
-  # List all allocations for every transaction in a report
-  ./ccworks allocations "Project Alpha Report"
-  ```
-  *Output Example:*
-  ```json
-  [
-    {
-      "index": 0,
-      "merchant": "Uber",
-      "allocations": [
-        {
-          "raw_text": "(25605) ORF-Technical Support | (A0001) General Fund | (P999) Research"
-        }
-      ]
-    }
-  ]
-  ```
-
-* **Add a New Allocation (Chartstring):**
-  ```bash
-  # Add a specific chartstring to transaction index 1
-  ./ccworks add-allocation "Project Alpha Report" 1 \
-      --dept "(25605) ORF-Technical Support" \
-      --fund "(A0001) General Fund" \
-      --prog "(P999) Research"
-  ```
-  *Output Example:*
-  ```text
-  [SUCCESS] Allocation added to transaction 1 in 'Project Alpha Report'!
-    - Dept: (25605) ORF-Technical Support
-    - Fund: (A0001) General Fund
-    - Prog: (P999) Research
-  ```
+# Add a chartstring to transaction 1
+ccworks txn allocate "Project Alpha Report" 1 \
+    --dept "(25605) ORF-Technical Support" \
+    --fund "(A0001) General Fund" \
+    --prog "(P999) Research"
+```
 
 ---
 
@@ -433,7 +359,7 @@ If you use Pi within this repository, it will automatically discover the extensi
 
 ## 🔮 Recommended Future Features & Integrations
 
-1. ~~Receipt-to-Report Attachment~~ *(Already implemented — see `attach-receipt` / `concur_attach_receipt`).*
+1. ~~Receipt-to-Report Attachment~~ *(Already implemented — see `txn attach-receipt` / `concur_attach_receipt`).*
 2. **Expense Itemization Automation:**
    * *Description:* Parse lodging/hotel folios or receipt text (using OCR/LLM) and programmatically itemize room rates, room taxes, parking, and meals.
    * *Value:* Eliminates tedious manual breakdowns of hotel checkout bills.
@@ -462,7 +388,7 @@ Modern enterprise security often requires MFA or SSO login screens that standard
 
 1. Run the manual session setup:
    ```bash
-   ./ccworks login
+   ./ccworks session login
    ```
 2. A headed Chromium window will open. Enter your email/password, solve SSO if prompted, and complete the MFA authentication.
 3. Once logged in and redirected to the SAP Concur dashboard page, return to your terminal and press **ENTER**.
