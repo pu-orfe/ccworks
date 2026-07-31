@@ -11,10 +11,17 @@ session. Commands are grouped by resource: `ccworks <group> <subcommand>`.
 ## Invocation
 
 `ccworks <group> <sub>` (installed) and `./ccworks <group> <sub>` (repo checkout)
-are interchangeable — the launcher forwards arguments verbatim. The launcher
+take identical arguments — the launcher forwards verbatim. The launcher
 additionally owns checkout-only chores that do not exist in the CLI: `setup`,
 `test-local`, `test-docker`, `test-browser-smoke`, `test-reports-live`,
 `test-receipts-live`.
+
+**A stale install is the common trap.** The installed binary tracks whatever
+version was released, not the working tree. If a command fails with
+`invalid choice: 'report'` and the error lists flat names (`query`,
+`report-details`, …), the binary on PATH predates this surface — do not rewrite
+the command to the old names. Prefer `./ccworks` from the checkout, and tell the
+user their install is stale.
 
 From a checkout without the package on PATH, use `.venv/bin/python -m
 ccworks.cli` (or just `./ccworks`).

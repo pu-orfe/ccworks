@@ -61,12 +61,20 @@ ccworks card show "Office Depot"
 ccworks session status
 ```
 
-The two entry points are interchangeable and accept identical arguments:
+The two entry points accept identical arguments, **provided the installed
+package is new enough to have this surface**:
 
 | | `ccworks <group> <sub>` | `./ccworks <group> <sub>` |
 | :--- | :--- | :--- |
 | Source | Entry point from Homebrew / `pip install` | The zsh launcher in a repo checkout |
 | Behaviour | The CLI itself | Manages `.venv`, then forwards **verbatim** to the CLI |
+| Tracks | The released version you installed | Your working tree, always current |
+
+An installation predating the noun-verb surface rejects these commands with
+`invalid choice: 'report'` and lists the old flat names instead. That is a stale
+binary, not a bug — check with `ccworks --help`, and either upgrade
+(`brew upgrade ccworks`) or use `./ccworks` from the checkout, which always
+reflects your working tree.
 
 The launcher owns only the checkout-only chores that cannot work from an
 installed package — `setup`, `test-local`, `test-docker`,
