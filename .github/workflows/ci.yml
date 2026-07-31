@@ -30,6 +30,11 @@ jobs:
       run: sudo apt-get install -y --no-install-recommends zsh
 
     - name: Run unit tests
+      env:
+        # The launcher forwarding tests invoke ./ccworks, which bootstraps a
+        # .venv on first use. Skip its chromium download — this job is meant to
+        # stay Playwright-free.
+        CCWORKS_SKIP_BROWSER_BOOTSTRAP: "1"
       run: |
         # Only run the pure unit tests to avoid Playwright dependency issues
         python -m unittest tests/test_client.py tests/test_launcher_dispatch.py tests/test_cli_surface.py

@@ -60,6 +60,23 @@ class TestLauncherIsThinPassthrough(unittest.TestCase):
             "the catch-all must forward the full argument list verbatim",
         )
 
+    def test_venv_bootstrap_never_writes_to_stdout(self):
+        # stdout is the data channel: query commands emit JSON there. On a fresh
+        # checkout ensure_venv runs pip, and unredirected pip output would be
+        # prepended to a command's JSON. Assert every command in the bootstrap
+        # is redirected, since the failure only reproduces when .venv is absent.
+        text = LAUNCHER.read_text()
+        body = text[text.index("ensure_venv() {"):text.index("require_docker_compose() {")]
+        offenders = [
+            line.strip() for line in body.splitlines()
+            if re.match(r"\s+(python3 -m venv|pip |playwright )", line)
+            and ">&2" not in line
+        ]
+        self.assertEqual(
+            [], offenders,
+            f"ensure_venv writes to stdout, corrupting JSON output: {offenders}",
+        )
+
     def test_usage_advertises_exactly_the_dev_tasks(self):
         text = LAUNCHER.read_text()
         body = text[text.index("usage() {"):text.index("# Activate the local dev venv")]

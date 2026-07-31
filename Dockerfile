@@ -9,6 +9,12 @@ COPY src/ ./src/
 COPY tests/ ./tests/
 RUN pip install --no-cache-dir -e .
 
+# The base image ships browser binaries for its own pinned playwright version,
+# but `playwright` is an open requirement (>=1.44) so pip may resolve a newer
+# one whose binaries live under a different path. Install browsers for whatever
+# version pip actually resolved; OS-level deps already come from the base image.
+RUN playwright install chromium
+
 # Skip the interactive chromium bootstrap in the container — the base image
 # already ships Playwright browsers.
 ENV CCWORKS_SKIP_BROWSER_BOOTSTRAP=1
