@@ -242,7 +242,7 @@ class ConcurBrowserClient:
                 logger.error("Session expired detected via URL/Title redirection.")
                 raise ConcurSessionExpiredError(
                     "Your SAP Concur session has expired. Please re-run the login command:\n"
-                    "  ./ccworks login"
+                    "  ccworks session login"
                 )
 
     def _wait_for_dashboard(self, page: Any) -> None:
@@ -421,7 +421,7 @@ class ConcurBrowserClient:
         if not os.path.exists(self.session_file):
             raise FileNotFoundError(
                 f"Session file '{self.session_file}' not found. "
-                "Please run login configuration first using: ccworks login"
+                "Please run login configuration first using: ccworks session login"
             )
 
         logger.info(f"Launching browser (headless={headless}) using session from {self.session_file}...")
@@ -443,7 +443,7 @@ class ConcurBrowserClient:
                 current_url = page.url
                 if "login" in current_url.lower() or "signin" in current_url.lower():
                     self._take_screenshot(page, "session_expired_error")
-                    raise RuntimeError("Session appears to have expired. Please re-run 'login' or './ccworks login'.")
+                    raise RuntimeError("Session appears to have expired. Re-run: ccworks session login")
 
                 # Wait for SPA widgets to load
                 self._wait_for_dashboard(page)

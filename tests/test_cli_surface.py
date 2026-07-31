@@ -139,6 +139,43 @@ class TestRetiredNames(unittest.TestCase):
             self.assertIn(LEGACY_COMMANDS[old], proc.stderr, old)
 
 
+class TestNoRetiredNamesInUserFacingText(unittest.TestCase):
+    """Error messages must not tell users to run a command that no longer exists.
+
+    The session-expiry error said "Please re-run the login command: ./ccworks
+    login" well after `login` became `session login`, so following the
+    instruction produced "unrecognized command". Docs were covered by a test;
+    source strings were not.
+    """
+
+    SOURCE_FILES = [
+        REPO_ROOT / "src" / "ccworks" / "browser_client.py",
+        REPO_ROOT / "src" / "ccworks" / "cli.py",
+        REPO_ROOT / "src" / "ccworks" / "client.py",
+    ]
+
+    def test_no_source_string_instructs_a_retired_command(self):
+        # Match a retired name only where it reads as an instruction, i.e.
+        # preceded by `ccworks ` -- so LEGACY_COMMANDS' own keys are not hits.
+        pattern = re.compile(
+            r"(?:\./)?ccworks\s+(" + "|".join(re.escape(c) for c in sorted(LEGACY_COMMANDS)) + r")\b"
+        )
+        offenders = []
+        for path in self.SOURCE_FILES:
+            if not path.exists():
+                continue
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                for match in pattern.finditer(line):
+                    # The retired -> replacement table legitimately names them.
+                    if "LEGACY_COMMANDS" in line or "Did you mean" in line:
+                        continue
+                    offenders.append(f"{path.name}:{lineno}: {match.group(0)}")
+        self.assertEqual(
+            [], offenders,
+            "user-facing text instructs a retired command: " + "; ".join(offenders),
+        )
+
+
 class TestGuards(unittest.TestCase):
     """Flag combinations that must be refused rather than silently misfire."""
 

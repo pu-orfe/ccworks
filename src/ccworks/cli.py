@@ -610,7 +610,7 @@ def run_tests():
                 browser_client.run_headed_login()
                 
                 result = {"status": "success", "message": "Manual login setup complete."}
-                summary = "\n[SUCCESS] Setup complete. You can now run browser-based automations.\nTo run the draft creator, use: ccworks create"
+                summary = "\n[SUCCESS] Setup complete. You can now run browser-based automations.\nTo create a draft report, use: ccworks report create"
                 output_result(result, summary)
             except ConcurSessionExpiredError as e:
 
