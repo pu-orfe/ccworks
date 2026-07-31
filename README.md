@@ -186,8 +186,17 @@ CONCUR_USER_LOGIN_ID=target_user_email@company.com
 | **api** | `api test` | Run the API client test suite (needs `.env` OAuth creds). |
 | — | `nuke` | Delete ALL draft reports **and** all available receipts. |
 
-Global flags work anywhere in the argument list: `-v/--verbose` (logs to
-stderr), `--output {json,text}` (default `json`).
+Global flags work anywhere in the argument list: `-V/--version`,
+`-v/--verbose` (logs to stderr), `--output {json,text}` (default `json`).
+
+`-V` reports the version of the entry point you invoked, which is worth checking
+first when a command is rejected as unrecognized — `./ccworks` tracks your
+working tree while an installed `ccworks` tracks whatever release you installed:
+
+```console
+$ ccworks --version
+ccworks 0.3.2
+```
 
 **stdout is data, stderr is diagnostics.** Query commands print JSON on stdout
 while logs, spinners, and session warnings go to stderr, so `2>/dev/null` is

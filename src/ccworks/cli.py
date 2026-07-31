@@ -19,6 +19,7 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGHUP, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
+from ccworks import __version__
 from ccworks.client import ConcurClient, ConcurError
 from ccworks.browser_client import ConcurBrowserClient, ConcurSessionExpiredError
 
@@ -217,8 +218,13 @@ def build_parser():
         description="SAP Concur API & Browser Access Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_command_reference(),
-        usage="ccworks [-h] [-v] [--output {json,text}] <command> [args...]",
+        usage="ccworks [-h] [-V] [-v] [--output {json,text}] <command> [args...]",
     )
+    # -V, not -v: -v is --verbose. Knowing the installed version matters here
+    # because the launcher tracks the working tree while the entry point tracks
+    # whatever release was installed, and the two can be far apart.
+    parser.add_argument("-V", "--version", action="version", version=f"ccworks {__version__}",
+                        help="Show the installed ccworks version and exit")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed log messages on stderr")
     parser.add_argument("--output", choices=["json", "text"], default="json",
                         help="Output format (default: json for queries)")

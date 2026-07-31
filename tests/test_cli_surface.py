@@ -139,6 +139,45 @@ class TestRetiredNames(unittest.TestCase):
             self.assertIn(LEGACY_COMMANDS[old], proc.stderr, old)
 
 
+class TestVersionFlag(unittest.TestCase):
+    """`--version` must report the installed version.
+
+    Without it there was no way to tell which ccworks you were running, which
+    made a stale Homebrew install indistinguishable from a broken one: the
+    launcher tracks the working tree while the entry point tracks whatever
+    release was installed.
+    """
+
+    def _run(self, *argv):
+        return subprocess.run(
+            [sys.executable, "-m", "ccworks.cli", *argv],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+            env={**__import__("os").environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        )
+
+    def test_version_flag_prints_a_version_and_exits_zero(self):
+        for flag in ("--version", "-V"):
+            proc = self._run(flag)
+            self.assertEqual(0, proc.returncode, f"{flag}: {proc.stderr}")
+            out = (proc.stdout + proc.stderr).strip()
+            self.assertRegex(out, r"^ccworks \S+$", f"{flag} printed {out!r}")
+
+    def test_reported_version_matches_pyproject(self):
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+        declared = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE).group(1)
+        reported = (self._run("--version").stdout + self._run("--version").stderr).strip()
+        self.assertEqual(
+            f"ccworks {declared}", reported,
+            "the version read from installed metadata disagrees with pyproject; "
+            "reinstall the package or the release is mislabelled",
+        )
+
+    def test_short_v_is_still_verbose_not_version(self):
+        # -v predates -V and must keep meaning --verbose.
+        proc = self._run("-v")
+        self.assertNotRegex(proc.stdout.strip(), r"^ccworks \S+$")
+
+
 class TestNoRetiredNamesInUserFacingText(unittest.TestCase):
     """Error messages must not tell users to run a command that no longer exists.
 
