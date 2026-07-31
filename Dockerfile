@@ -1,4 +1,6 @@
-FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
+# Keep this tag in step with the `playwright` version pip resolves for the
+# package (see pyproject.toml). When bumping, bump both together.
+FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
 
 WORKDIR /app
 
@@ -9,10 +11,12 @@ COPY src/ ./src/
 COPY tests/ ./tests/
 RUN pip install --no-cache-dir -e .
 
-# The base image ships browser binaries for its own pinned playwright version,
-# but `playwright` is an open requirement (>=1.44) so pip may resolve a newer
-# one whose binaries live under a different path. Install browsers for whatever
-# version pip actually resolved; OS-level deps already come from the base image.
+# Safety net for version drift. `playwright` is an open requirement (>=1.44), so
+# pip resolves whatever is newest at build time; when that outruns the base image
+# tag above, the pre-installed browsers sit at a path the new lib does not look
+# in and every test dies with "Executable doesn't exist at /ms-playwright/...".
+# This installs browsers for the version pip actually resolved, and no-ops when
+# they are already present. OS-level deps come from the base image.
 RUN playwright install chromium
 
 # Skip the interactive chromium bootstrap in the container — the base image
