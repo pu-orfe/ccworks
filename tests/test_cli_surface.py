@@ -22,6 +22,7 @@ from ccworks.cli import (  # noqa: E402
     LEGACY_COMMANDS,
     _legacy_command,
     build_parser,
+    split_incomplete_expenses,
 )
 
 CLI_SOURCE = (REPO_ROOT / "src" / "ccworks" / "cli.py").read_text()
@@ -137,6 +138,56 @@ class TestRetiredNames(unittest.TestCase):
             self.assertIn("unrecognized command", proc.stderr, old)
             self.assertIn("Did you mean", proc.stderr, old)
             self.assertIn(LEGACY_COMMANDS[old], proc.stderr, old)
+
+
+class TestIncompleteRowsAreWithheldFromWrites(unittest.TestCase):
+    """A row the capture flagged as incomplete must not be written back.
+
+    When a transaction's detail pane fails to open, `report show --deep` returns
+    it with business_purpose and comment empty and records it in
+    extraction.deep_scan_failures. Writing those empties back clears whatever
+    Concur actually holds -- silent data loss in the write direction.
+    """
+
+    CAPTURE = {
+        "report_name": "Statement",
+        "extraction": {
+            "deep_scan_failures": [
+                {"index": 1, "vendor": "APPLE.COM/BILL", "amount": "$2.99",
+                 "reason": "detail pane did not open; shallow fields only"}
+            ]
+        },
+        "expenses": [
+            {"index": 1, "vendor": "APPLE.COM/BILL", "amount": "$2.99",
+             "business_purpose": "", "comment": ""},
+            {"index": 2, "vendor": "ANTHROPIC", "amount": "$45.00",
+             "business_purpose": "Research", "comment": ""},
+        ],
+    }
+
+    def test_flagged_row_is_withheld(self):
+        safe, withheld = split_incomplete_expenses(self.CAPTURE["expenses"], self.CAPTURE)
+        self.assertEqual([1], [e["index"] for e in withheld])
+        self.assertEqual([2], [e["index"] for e in safe])
+
+    def test_capture_with_no_failures_passes_everything(self):
+        data = {"extraction": {"deep_scan_failures": []}}
+        expenses = [{"index": 1}, {"index": 2}]
+        safe, withheld = split_incomplete_expenses(expenses, data)
+        self.assertEqual(expenses, safe)
+        self.assertEqual([], withheld)
+
+    def test_capture_without_an_extraction_block_is_passed_through(self):
+        # JSON from before 0.3.0 has no extraction block; nothing to withhold.
+        expenses = [{"index": 1}, {"index": 2}]
+        safe, withheld = split_incomplete_expenses(expenses, {"report_name": "x"})
+        self.assertEqual(expenses, safe)
+        self.assertEqual([], withheld)
+
+    def test_null_extraction_does_not_raise(self):
+        safe, withheld = split_incomplete_expenses([{"index": 1}], {"extraction": None})
+        self.assertEqual([{"index": 1}], safe)
+        self.assertEqual([], withheld)
 
 
 class TestVersionFlag(unittest.TestCase):

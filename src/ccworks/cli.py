@@ -148,6 +148,26 @@ _COMMAND_MAP = {
 }
 
 
+def split_incomplete_expenses(expenses, data):
+    """Split expenses into (safe_to_write, withheld) using the capture's own report.
+
+    A row listed in extraction.deep_scan_failures has empty business_purpose and
+    comment because its detail pane never opened, not because Concur holds them
+    empty. Writing those values back clears real data, so they are withheld by
+    default. Pure function so this is unit-testable without driving a browser.
+    """
+    failed = {
+        f.get("index")
+        for f in (data.get("extraction") or {}).get("deep_scan_failures", [])
+        if f.get("index") is not None
+    }
+    if not failed:
+        return list(expenses), []
+    safe = [e for e in expenses if e.get("index") not in failed]
+    withheld = [e for e in expenses if e.get("index") in failed]
+    return safe, withheld
+
+
 def _legacy_command(args) -> str:
     """Map the parsed group/subcommand onto the dispatcher's command token."""
     group = getattr(args, "group", None)
@@ -296,6 +316,9 @@ def build_parser():
 
     r_apply = report.add_parser("apply-json", help="Apply edited report JSON back to Concur")
     r_apply.add_argument("json_path", type=str, help="Path to the edited JSON file")
+    r_apply.add_argument("--include-incomplete", action="store_true",
+                         help="Also write rows listed in extraction.deep_scan_failures, whose "
+                              "captured fields are known to be incomplete (default: skip them)")
 
     # ---------------- txn ----------------
     txn = add_group("txn", "Transactions within a report")
@@ -1351,9 +1374,20 @@ def run_tests():
                 
                 report_name_val = data.get("report_name")
                 expenses = data.get("expenses", [])
-                
+
                 if not report_name_val:
                     raise KeyError("Missing 'report_name' in JSON file.")
+
+                if not args.include_incomplete:
+                    expenses, withheld = split_incomplete_expenses(expenses, data)
+                    for e in withheld:
+                        print(
+                            f"[SKIP] index {e.get('index')} ({e.get('vendor')} "
+                            f"{e.get('amount')}): captured incompletely "
+                            f"(deep scan failed), so its fields are not safe to write. "
+                            f"Re-run `report show --deep` or pass --include-incomplete.",
+                            file=sys.stderr,
+                        )
                 
                 if args.output == "text":
                     print(f"[*] Report Name: {report_name_val}")

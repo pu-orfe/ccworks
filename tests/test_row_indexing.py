@@ -159,5 +159,68 @@ class TestApplyJsonRefusesMismatch(RowIndexingTestCase):
         self.assertFalse(entries[0]["success"])
 
 
+class TestApplyJsonLeavesOmittedFieldsAlone(RowIndexingTestCase):
+    """An absent key must mean "leave unchanged", not "set to empty".
+
+    apply_json_updates read fields with `exp.get("business_purpose", "")`, so an
+    omitted key became "" -- which is not None, so the `is not None` guard fired
+    and the field was overwritten with empty. Editing one field in a JSON file
+    therefore silently wiped every field you did not mention, and applying a row
+    whose deep scan failed would clear a real business purpose.
+    """
+
+    REPORT = "Omitted Fields DUPES"
+
+    def setUp(self):
+        self.client.create_draft_report(self.REPORT, "omit test", "", headless=True)
+        # Give row 1 a purpose and comment to protect.
+        self.client.update_report_transaction(
+            self.REPORT, transaction_indices=[1],
+            business_purpose="Keep this purpose",
+            comment="Keep this comment",
+            headless=True,
+        )
+
+    def _row1(self):
+        # deep=True is required: the mock's row markup carries only merchant,
+        # amount, and status, so a shallow read reports business_purpose and
+        # comment as "" no matter what they hold. Asserting against a shallow
+        # read would make these tests pass vacuously.
+        return self.client.get_report_details(self.REPORT, deep=True, headless=True)["expenses"][0]
+
+    def test_omitting_purpose_and_comment_preserves_them(self):
+        before = self._row1()
+        self.assertEqual("Keep this purpose", before["business_purpose"])
+
+        # Only expense_type is specified; purpose and comment are absent.
+        self.client.apply_json_updates(
+            self.REPORT,
+            [{"index": 1, "vendor": before["vendor"], "amount": before["amount"],
+              "expense_type": "Software"}],
+            headless=True,
+        )
+
+        after = self._row1()
+        self.assertEqual(
+            "Keep this purpose", after["business_purpose"],
+            "omitting business_purpose must not clear it",
+        )
+        self.assertEqual(
+            "Keep this comment", after["comment"],
+            "omitting comment must not clear it",
+        )
+
+    def test_explicit_empty_string_still_clears(self):
+        # "" remains the documented way to clear a field, so it must still work.
+        before = self._row1()
+        self.client.apply_json_updates(
+            self.REPORT,
+            [{"index": 1, "vendor": before["vendor"], "amount": before["amount"],
+              "comment": ""}],
+            headless=True,
+        )
+        self.assertEqual("", self._row1()["comment"], 'an explicit "" must clear the field')
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

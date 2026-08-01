@@ -195,7 +195,7 @@ working tree while an installed `ccworks` tracks whatever release you installed:
 
 ```console
 $ ccworks --version
-ccworks 0.3.2
+ccworks 0.3.3
 ```
 
 **stdout is data, stderr is diagnostics.** Query commands print JSON on stdout
@@ -348,6 +348,26 @@ to a different expense:
 That matters because a positional index is only valid while the report is
 unchanged. Add, delete, or re-sort a line item in Concur after producing the
 JSON and the index still resolves — to the wrong expense.
+
+**An absent field is left alone; an explicit `""` clears it.** Omit
+`business_purpose` and whatever Concur holds is preserved; set it to `""` and it
+is cleared. Before 0.3.3 an omitted field was written as empty, so editing one
+field silently wiped every field you had not mentioned.
+
+**Rows captured incompletely are withheld.** If the JSON's
+`extraction.deep_scan_failures` names a row, its `business_purpose` and
+`comment` are empty because the detail pane never opened — not because Concur
+holds them empty — so writing them back would clear real data. `apply-json`
+skips those rows and says so:
+
+```
+[SKIP] index 1 (APPLE.COM/BILL $2.99): captured incompletely (deep scan failed),
+       so its fields are not safe to write. Re-run `report show --deep` or pass
+       --include-incomplete.
+```
+
+Pass `--include-incomplete` to write them anyway. A row whose pane will not open
+generally cannot be written by ccworks either; set that one in the Concur UI.
 
 **Regenerate JSON captured before 0.3.0.** Earlier versions numbered rows by
 their position among raw HTML matches, so the numbers were sparse and did not

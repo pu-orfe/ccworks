@@ -3517,8 +3517,17 @@ class ConcurBrowserClient:
                         continue
 
                     expense_type = exp.get("expense_type") or exp.get("type")
-                    purpose = exp.get("business_purpose", "")
-                    comment = exp.get("comment", "")
+                    # No "" default: an absent key must mean "leave this field
+                    # alone", and "" must mean "clear it". These previously
+                    # defaulted to "", which is not None, so the `is not None`
+                    # guards below always fired and every omitted field was
+                    # overwritten with empty -- wiping a business purpose or
+                    # comment that the caller never mentioned. That is especially
+                    # dangerous for a row listed in extraction.deep_scan_failures,
+                    # whose fields read as "" because the detail pane never
+                    # opened, not because Concur holds them empty.
+                    purpose = exp.get("business_purpose")
+                    comment = exp.get("comment")
                     vendor = exp.get("vendor", "Unknown")
                     amount = exp.get("amount", "")
 

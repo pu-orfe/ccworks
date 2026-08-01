@@ -106,6 +106,17 @@ saying so.
 amount and vendor, and **refuses** that row otherwise. If you see
 "Row does not match supplied expense", the JSON is stale — re-run `report show`
 and rebuild it. Do not try to guess a corrected index.
+
+Two more write rules for `apply-json`:
+
+- **Omit a field to leave it alone; pass `""` to clear it.** When changing one
+  field, send only that field. Do not helpfully round-trip every field you read —
+  and never fill a blank with `""` to "normalize" the payload, since that clears
+  real data in Concur.
+- **Rows in `extraction.deep_scan_failures` are withheld** and reported as
+  `[SKIP]`. Their captured fields are empty only because the pane never opened.
+  Do not reach for `--include-incomplete` to silence that; tell the user the row
+  needs setting in the Concur UI.
 - If a name is ambiguous or unverified, run `report list` (drafts) or
   `report list --historical` and confirm the exact string first.
 
