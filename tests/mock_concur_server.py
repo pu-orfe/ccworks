@@ -48,6 +48,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         /* Report Details View Panel */
         #report-details-panel { display: none; background: white; padding: 20px; border: 1px solid #e1e4e6; border-radius: 8px; margin-top: 20px; }
         .detail-row { margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+
+        /* Per-row receipt controls. Real Concur exposes no <input type="file">
+           in the grid: attaching opens the OS file chooser. The controls below
+           mirror the live attributes (data-nuiexp / data-nui-widgets / aria-label)
+           and route through a single page-level hidden input purely so that
+           Playwright's expect_file_chooser has something to intercept. */
+        .rcpt-attach, .rcpt-thumb, .row-actions-trigger { border: 1px solid #c9c9c9; background: white; border-radius: 4px; cursor: pointer; padding: 2px 6px; font-size: 12px; }
+        .row-actions-wrap { position: relative; }
+        .row-actions-menu { position: absolute; top: 20px; left: 0; background: white; border: 1px solid #c9c9c9; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 6000; min-width: 140px; }
+        .row-actions-menu [role="menuitem"] { padding: 8px 12px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+        .row-actions-menu [role="menuitem"]:hover { background: #e0e5ea; }
     </style>
 </head>
 <body>
@@ -343,6 +354,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     row.style.marginBottom = '10px';
                     row.style.cursor = 'pointer';
                     row.onclick = () => selectTransaction(row, t, idx);
+                    // Grid-level receipt indicator only. Attaching happens in the
+                    // detail pane, not here: the grid thumbnail can also denote a
+                    // card e-receipt, which is not an uploaded file.
+                    const receiptControl = t.receipt
+                        ? `<button type="button" class="rcpt-thumb"
+                                   data-nuiexp="receipt-thumbnail-button-${idx}"
+                                   aria-label="View receipt">&#128220;</button>`
+                        : '';
                     row.innerHTML = `
                         <div class="sapMCb" style="width:20px; height:20px; border:1px solid #ccc; margin-right:5px;"></div>
                         <div style="display:none;">Select expense</div>
@@ -351,6 +370,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             ${t.reconciled ? '<span style="color: green; font-weight: bold;" class="recon-status">✓ Reconciled</span>' : '<span style="color: red;" class="recon-status">Pending</span>'}
                             ${t.receipt ? `<span style="color: blue;" class="receipt-attached-name">Attached: ${t.receipt}</span>` : ''}
                         </div>
+                        ${receiptControl}
                     `;
                     list.appendChild(row);
                 });
@@ -421,9 +441,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
                 <div class="form-group">
                     <label>Receipt</label>
-                    <div style="margin-top:5px;">
-                        ${t.receipt ? `<span style="color: blue;" class="receipt-link">${t.receipt}</span>` : `<input type="file" class="recon-receipt-file" onchange="uploadReceiptForTransaction('${selectedReportName}', ${idx}, this.files[0].name)">`}
-                    </div>
+                    <!-- Receipt area. Rendered as a skeleton first and hydrated
+                         asynchronously, exactly as live Concur does: reading the
+                         controls before it settles is a race that silently
+                         attaches nothing. -->
+                    <div id="receipt-area"><div class="entry-receipts-accessible-skeleton" aria-live="polite"></div></div>
                 </div>
                 <div style="margin-top:20px;">
                     <button class="button" style="background:#e0e5ea;" onclick="closeTransactionDetail()">Cancel</button>
@@ -431,6 +453,130 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
             `;
             pane.style.display = 'block';
+            receiptTab = 'CARD';
+            hydrateReceiptArea();
+        }
+
+        // ---- Receipt panel -------------------------------------------------
+        // Models live Concur: an async skeleton, a Receipt / Card Receipt toggle
+        // that defaults to CARD on card transactions, and two mutually exclusive
+        // states (drop zone vs viewer). Each of these hid a silent failure:
+        //   * reading controls before hydration attaches nothing
+        //   * uploading while the CARD tab is active is discarded
+        //   * a viewer left standing makes the next expense look already-attached
+        let receiptTab = 'CARD';
+
+        function renderReceiptArea() {
+            const t = selectedTx, idx = selectedTxIdx;
+            const area = document.getElementById('receipt-area');
+            if (!area) return;
+            // Card transactions expose the toggle; cash ones do not.
+            const hasTabs = t.card_transaction !== false;
+            if (!hasTabs) receiptTab = 'RECEIPT';
+            const tabs = hasTabs ? `
+                <div class="receipt-tabs" data-nuiexp="receipt-tabs">
+                  <ul role="listbox">
+                    <li id="tab-RECEIPT" role="option" aria-selected="${receiptTab === 'RECEIPT'}"
+                        onclick="switchReceiptTab('RECEIPT')"><div>Receipt</div></li>
+                    <li id="tab-CARD" role="option" aria-selected="${receiptTab === 'CARD'}"
+                        onclick="switchReceiptTab('CARD')"><div>Card Receipt</div></li>
+                  </ul>
+                </div>` : '';
+
+            // The CARD tab carries its own input. Uploading there is silently
+            // discarded by Concur, so the mock discards it too.
+            const cardPane = `
+                <div data-nuiexp="receipt-body">
+                  <label for="upload-file" style="display:none;">Select a file for upload.
+                    <input id="upload-file" type="file" data-nuiexp="erc-inp-upload-file"
+                           onchange="onReceiptUpload(this, 'CARD')">
+                  </label>
+                  <div data-nuiexp="receipt-viewer-metadata"><span class="filename"></span></div>
+                </div>`;
+
+            const attached = `
+                <div data-nuiexp="receipt-body">
+                  <label for="upload-file" style="display:none;">Select a file for upload.
+                    <input id="upload-file" type="file" data-nuiexp="erc-inp-upload-file"
+                           onchange="onReceiptUpload(this, 'APPEND')">
+                  </label>
+                  <div data-nuiexp="receipt-viewer-metadata"><span class="filename">${t.receipt || ''}</span></div>
+                  <div data-nuiexp="receipt-viewer-buttons" role="group" aria-label="Receipt Actions">
+                    <button type="button" data-nuiexp="receipt-viewer__detach"
+                            aria-label="Remove receipt: ${t.receipt || ''}"
+                            onclick="removeReceipt(${idx})">Remove</button>
+                    <button type="button" data-nuiexp="receipt-viewer__append" aria-label="Add Receipt">Add</button>
+                  </div>
+                </div>`;
+
+            const empty = `
+                <div class="spend-common__drag-n-drop" data-nuiexp="drag-drop-file">
+                  <button id="upload-receipt-button" type="button">Upload New Receipt</button>
+                  <input type="file" data-nuiexp="upload-receipt" aria-hidden="true" tabindex="-1"
+                         style="display:none" onchange="onReceiptUpload(this, 'RECEIPT')">
+                  <label for="upload-file" style="display:none;">Select a file for upload.
+                    <input id="upload-file" type="file" data-nuiexp="upload-file"
+                           onchange="onReceiptUpload(this, 'RECEIPT')">
+                  </label>
+                </div>`;
+
+            const body = receiptTab === 'CARD' ? cardPane : (t.receipt ? attached : empty);
+            area.innerHTML = tabs + body;
+        }
+
+        function hydrateReceiptArea() {
+            const area = document.getElementById('receipt-area');
+            if (!area) return;
+            // Leave the previous content standing while "loading", which is what
+            // let a stale viewer be read as the next expense's receipt.
+            setTimeout(renderReceiptArea, 700);
+        }
+
+        function switchReceiptTab(which) {
+            receiptTab = which;
+            const area = document.getElementById('receipt-area');
+            if (area) area.innerHTML = '<div class="entry-receipts-accessible-skeleton" aria-live="polite"></div>';
+            setTimeout(renderReceiptArea, 500);
+        }
+
+        async function onReceiptUpload(input, mode) {
+            const f = input.files && input.files[0];
+            if (!f) return;
+            // Uploading on the Card Receipt tab goes nowhere, exactly as in Concur.
+            if (mode === 'CARD') { input.value = ''; return; }
+
+            await fetch('/api/reports/attach_receipt', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ report_name: selectedReportName,
+                                       index: selectedTxIdx, receipt_name: f.name })
+            });
+            const res = await fetch('/api/reports');
+            reportsData = await res.json();
+            const r = reportsData.find(x => x.name === selectedReportName);
+            if (r) {
+                selectedTx = (r.transactions || [])[selectedTxIdx];
+                // Refresh the grid behind the pane, but leave the pane open: the
+                // viewer that replaces the drop zone is what confirms the upload.
+                showReportDetails(r);
+            }
+            receiptTab = 'RECEIPT';
+            const area = document.getElementById('receipt-area');
+            if (area) area.innerHTML = '<div class="entry-receipts-accessible-skeleton" aria-live="polite"></div>';
+            setTimeout(renderReceiptArea, 600);
+        }
+
+        async function removeReceipt(idx) {
+            await fetch('/api/reports/attach_receipt', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ report_name: selectedReportName, index: idx, receipt_name: null })
+            });
+            const res = await fetch('/api/reports');
+            reportsData = await res.json();
+            const r = reportsData.find(x => x.name === selectedReportName);
+            if (r) selectedTx = (r.transactions || [])[idx];
+            const area = document.getElementById('receipt-area');
+            if (area) area.innerHTML = '<div class="entry-receipts-accessible-skeleton" aria-live="polite"></div>';
+            setTimeout(renderReceiptArea, 600);
         }
 
         function closeTransactionDetail() {
@@ -833,6 +979,19 @@ class MockConcurRequestHandler(BaseHTTPRequestHandler):
                     {"id": "TX_DUP_2", "merchant": "ESHIPGLOBAL INC", "amount": "$53.77", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
                     {"id": "TX_DUP_3", "merchant": "Office Depot", "amount": "$189.99", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
                 ]
+            # A report whose name contains RECEIPTS is seeded for the receipt
+            # paths: three rows sharing a merchant AND amount (so only the index
+            # can distinguish them), one row that already holds a receipt (the
+            # replace path), and one non-card row that has no Receipt/Card
+            # Receipt toggle.
+            elif "RECEIPTS" in name:
+                transactions = [
+                    {"id": "TX_RC_1", "merchant": "ESHIPGLOBAL INC", "amount": "$23.28", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                    {"id": "TX_RC_2", "merchant": "ESHIPGLOBAL INC", "amount": "$23.28", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                    {"id": "TX_RC_3", "merchant": "ESHIPGLOBAL INC", "amount": "$23.28", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
+                    {"id": "TX_RC_4", "merchant": "ANTHROPIC", "amount": "$400.00", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False, "receipt": "old.pdf"},
+                    {"id": "TX_RC_5", "merchant": "PETTY CASH", "amount": "$12.00", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False, "card_transaction": False},
+                ]
             else:
                 transactions = [
                     {"id": "TX_REP_1", "merchant": "Uber", "amount": "$24.50", "expense_type": "", "business_purpose": "", "comment": "", "allocation_code": "", "reconciled": False},
@@ -877,8 +1036,14 @@ class MockConcurRequestHandler(BaseHTTPRequestHandler):
                 if r["name"] == report_name:
                     txs = r.get("transactions", [])
                     if 0 <= tx_idx < len(txs):
-                        txs[tx_idx]["receipt"] = receipt_name
-            
+                        # A falsy name detaches. Storing None instead would leave a
+                        # viewer with an empty filename, which is exactly the state
+                        # that made a removed receipt look like an attached one.
+                        if receipt_name:
+                            txs[tx_idx]["receipt"] = receipt_name
+                        else:
+                            txs[tx_idx].pop("receipt", None)
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
