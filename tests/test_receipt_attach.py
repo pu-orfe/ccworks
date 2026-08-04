@@ -283,6 +283,22 @@ class TestFieldEditsStillWork(ReceiptAttachTestCase):
         self.assertEqual("Software", row.get("expense_type"))
         self.assertEqual("both.pdf", row.get("receipt"))
 
+    def test_expense_type_via_native_select(self):
+        """The other branch: a plain <select> rather than Concur's combobox.
+
+        The mock renders the combobox by default because that is what live Concur
+        uses, but the native-select branch still has to work -- older tenants and
+        the reconcile path both hit it.
+        """
+        report = "NATIVESELECT expense type"
+        self.make_report(report)
+        res = self.apply(report, [{
+            "index": 1, "vendor": "Uber", "amount": "$24.50",
+            "expense_type": "Lodging",
+        }])
+        self.assertTrue(res["results"][0]["success"], res["results"][0])
+        self.assertEqual("Lodging", self.fields(report)[1].get("expense_type"))
+
     def test_a_field_that_does_not_take_fails_the_row(self):
         """An expense type the pane will not accept must fail, not report success."""
         res = self.apply(self.REPORT, [{

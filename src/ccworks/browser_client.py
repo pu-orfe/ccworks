@@ -215,10 +215,20 @@ class ConcurBrowserClient:
     # read-back check and a re-focus after clearing, the others did not, so the
     # same edit succeeded through one command and silently vanished through
     # another.
-    TYPE_FIELD_SELECTORS = ("select.recon-type, select[data-nuiexp*='type'], "
-                            "select[id*='type'], [data-nuiexp*='type']:not([id*='header']), "
-                            "input[id*='type']:not([id*='header']), "
-                            ".sapMInputBaseInner[id*='type']")
+    # Expense type. The old list matched on `[data-nuiexp*='type']`, a wildcard
+    # that hits 33 elements in a live report -- every `expense-type-cell` in the
+    # grid plus the `expense-type-quicktips` help panel -- and none of them are
+    # the editor. `.first` therefore typed into a table cell and read a tooltip
+    # back. These are exact.
+    EXPENSE_TYPE_FIELD = "[data-nuiexp='field-expenseType']"
+    EXPENSE_TYPE_TRIGGER = "[data-nuiexp='field-expenseType__trigger']"
+    EXPENSE_TYPE_SEARCH = "[data-nuiexp='field-expenseType__input']"
+    # Scope options to the picker's own listbox: the receipt Receipt/Card Receipt
+    # toggle is also role=option, and a page-wide search matches it too.
+    EXPENSE_TYPE_POPUP = ".sapcnqr-selection-list__list-box"
+    # A native <select> is what the mock renders; Concur renders the combobox.
+    NATIVE_TYPE_SELECT = ("select.recon-type, select[data-nuiexp='field-type'], "
+                          "select[data-nuiexp='field-expenseType'], select[id*='type']")
     PURPOSE_FIELD_SELECTORS = ("[data-nuiexp='field-businessPurpose'], input#businessPurpose, "
                                "input.recon-purpose, input[id*='usinessPurpose']")
     COMMENT_FIELD_SELECTORS = ("[data-nuiexp='field-comment'], textarea#comment, "
@@ -275,65 +285,83 @@ class ConcurBrowserClient:
                 continue
         return False, "Could not find Save button"
 
+    def _read_expense_type(self, ctx):
+        """The expense type currently shown, or None."""
+        native = ctx.locator(self.NATIVE_TYPE_SELECT).first
+        if native.count() > 0:
+            try:
+                return (native.input_value() or "").strip() or None
+            except Exception:
+                pass
+        field = ctx.locator(self.EXPENSE_TYPE_FIELD).first
+        if field.count() == 0:
+            return None
+        text = " ".join((field.text_content() or "").split())
+        # The container holds its own label and required marker, e.g.
+        # "Expense Type*Computer Peripherals (OIT use only)".
+        for lead in ("Expense Type *", "Expense Type*", "Expense Type"):
+            if text.startswith(lead):
+                text = text[len(lead):]
+                break
+        return text.strip() or None
+
     def _set_expense_type(self, page, ctx, expense_type):
         """Set the expense type on the open pane. Returns an error string, or None.
 
-        Handles both a native <select> and Concur's searchable combobox. The
-        keyboard fallback is confined to the combobox branch: `select_option`
-        leaves focus wherever it was -- on the Edit button that opened the pane --
-        so an unconditional Enter re-activated that button, re-rendered the pane,
-        and silently reverted the selection that had just been made.
+        Concur renders this as a role=combobox with no input of its own; a search
+        box appears only once the picker is open. The previous implementation
+        typed into the field directly and pressed Enter, which in a live report
+        meant typing into a grid cell and then re-activating whatever had focus.
         """
-        field = ctx.locator(self.TYPE_FIELD_SELECTORS).filter(visible=True).first
-        if field.count() == 0:
-            return f"expense type field not found (wanted {expense_type!r})"
-        try:
-            if field.evaluate("el => el.tagName.toLowerCase()") == "select":
-                field.select_option(label=expense_type)
-            else:
-                field.click(force=True)
+        native = ctx.locator(self.NATIVE_TYPE_SELECT).first
+        if native.count() > 0:
+            try:
+                native.select_option(label=expense_type)
                 page.wait_for_timeout(500)
-                clear_btn = page.locator("[data-nuiexp='field-expenseType__clear']").first
-                if clear_btn.count() > 0 and clear_btn.is_visible():
-                    clear_btn.click()
-                    page.wait_for_timeout(500)
-                    # The clear button takes focus with it; without re-focusing the
-                    # field the keystrokes below land on nothing.
-                    trigger = page.locator("[data-nuiexp='field-expenseType__trigger']").first
-                    if trigger.count() > 0:
-                        trigger.click()
-                page.keyboard.press("Control+A")
-                page.keyboard.press("Backspace")
-                # Type the value so the suggestion list is actually filtered.
-                # Selecting from an unfiltered list commits whichever option is
-                # highlighted, which writes the wrong expense type.
-                page.keyboard.type(expense_type, delay=50)
+            except Exception as e:
+                return f"failed to select expense type {expense_type!r}: {e}"
+        else:
+            field = ctx.locator(self.EXPENSE_TYPE_FIELD).first
+            if field.count() == 0:
+                return f"expense type field not found (wanted {expense_type!r})"
+            try:
+                trigger = page.locator(self.EXPENSE_TYPE_TRIGGER).first
+                (trigger if trigger.count() > 0 else field).click(force=True)
+                page.wait_for_timeout(900)
+
+                search = page.locator(self.EXPENSE_TYPE_SEARCH).first
+                if search.count() == 0:
+                    return f"expense type picker did not open for {expense_type!r}"
+                search.click()
+                search.fill(expense_type)
+                page.wait_for_timeout(1200)
+
+                # Option labels carry the type name followed immediately by its
+                # description ("Computer Peripherals (OIT use only)Accessories
+                # like keyboards..."), so an exact-match regex never matches.
+                options = page.locator(f"{self.EXPENSE_TYPE_POPUP} [role='option']")
+                target = None
+                for i in range(options.count()):
+                    opt = options.nth(i)
+                    label = " ".join((opt.text_content() or "").split())
+                    if label.startswith(expense_type):
+                        target = opt
+                        break
+                if target is None:
+                    page.keyboard.press("Escape")
+                    return (f"expense type {expense_type!r} was not offered by the "
+                            f"picker")
+                target.click(force=True)
                 page.wait_for_timeout(1500)
+            except Exception as e:
+                return f"failed to set expense type {expense_type!r}: {e}"
 
-                item = page.locator(self.SUGGESTION_ITEM_SELECTORS).filter(
-                    has_text=re.compile(f"^{re.escape(expense_type)}$", re.I)).first
-                if item.count() > 0 and item.is_visible():
-                    item.click(force=True)
-                else:
-                    page.keyboard.press("ArrowDown")
-                    page.wait_for_timeout(500)
-                    page.keyboard.press("Enter")
-                page.wait_for_timeout(1000)
-                page.keyboard.press("Tab")
-            page.wait_for_timeout(800)
-        except Exception as e:
-            return f"failed to set expense type {expense_type!r}: {e}"
-
-        # Read back. Without this the caller cannot tell a write from a no-op,
-        # which is how the reverted selection went unnoticed.
-        try:
-            current = field.input_value()
-        except Exception:
-            current = field.text_content() or ""
-        current = (current or "").split("\n")[0].strip()
-        if expense_type.lower() not in current.lower():
+        # Read back. Without this a write that silently did nothing -- or landed
+        # on the wrong element entirely -- is indistinguishable from success.
+        got = self._read_expense_type(ctx)
+        if not got or expense_type.lower() not in got.lower():
             return (f"expense type did not take: wanted {expense_type!r}, "
-                    f"field shows {current!r}")
+                    f"field shows {got!r}")
         return None
 
     def _fill_text_field(self, ctx, selectors, value, label):
@@ -2224,12 +2252,12 @@ class ConcurBrowserClient:
                         comment_field = ""
                         
                         try:
-                            # Check for select.recon-type or input.recon-type, or search by ID/class
-                            type_el = row.locator("select.recon-type, select[id*='type'], input.recon-type").first
-                            if type_el.count() > 0:
-                                val = type_el.input_value()
-                                if val:
-                                    exp_type = val
+                            # Same reader as every other path. Only overrides the
+                            # value parsed from the row text when the row actually
+                            # carries an editable type control.
+                            val = self._read_expense_type(row)
+                            if val:
+                                exp_type = val
                         except Exception as e:
                             logger.debug(f"Could not read type from input/select: {e}")
 
@@ -2425,15 +2453,13 @@ class ConcurBrowserClient:
                                     expenses[i]["business_purpose"] = " ".join(val.split()).strip()
                             except: pass
                             
-                            # Expense Type
+                            # Expense Type. Shares one reader with the write paths:
+                            # this copy searched `[data-nuiexp*='type']`, which in a
+                            # live report matches grid cells and the quick-tips
+                            # help panel rather than the field.
                             try:
-                                t_field = page.locator("[data-nuiexp='field-expenseType'], [data-nuiexp*='expenseType'], [data-nuiexp*='type'], select[id*='type'], .sapMInputBaseInner[id*='type']").first
-                                if t_field.count() > 0:
-                                    val = t_field.input_value() or t_field.text_content() or ""
-                                    # Handle label-heavy text in Fiori
-                                    if "\n" in val:
-                                        val = val.split("\n")[0].strip()
-                                    val = val.replace("Expense Type", "").replace("*", "").strip()
+                                val = self._read_expense_type(page)
+                                if val:
                                     expenses[i]["expense_type"] = val
                                     expenses[i]["type"] = val
                             except: pass

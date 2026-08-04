@@ -417,15 +417,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             
             content.innerHTML = `
                 <div class="form-group">
-                    <label for="recon-type-${idx}">Expense Type</label>
-                    <select class="recon-type" style="width: 100%;" id="recon-type-${idx}" data-nuiexp="field-type">
-                        <option value="">Expense Type...</option>
-                        <option value="Ground Transportation" ${t.expense_type === 'Ground Transportation' ? 'selected' : ''}>Ground Transportation</option>
-                        <option value="Office Supplies" ${t.expense_type === 'Office Supplies' ? 'selected' : ''}>Office Supplies</option>
-                        <option value="Lodging" ${t.expense_type === 'Lodging' ? 'selected' : ''}>Lodging</option>
-                        <option value="Meal" ${t.expense_type === 'Meal' ? 'selected' : ''}>Meal</option>
-                        <option value="Software" ${t.expense_type === 'Software' ? 'selected' : ''}>Software</option>
-                    </select>
+                    ${renderExpenseTypeField(t, idx)}
                 </div>
                 <div class="form-group">
                     <label for="businessPurpose">Business Purpose</label>
@@ -455,6 +447,99 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             pane.style.display = 'block';
             receiptTab = 'CARD';
             hydrateReceiptArea();
+        }
+
+        // ---- Expense type field --------------------------------------------
+        // Concur renders this as a role=combobox with NO input of its own; a
+        // search box exists only while the picker is open, and each option's
+        // label is the type name with its description appended. Modelling it as
+        // a native <select> hid a production bug: the write path typed into the
+        // field and pressed Enter, which against the real DOM meant typing into
+        // a grid cell. A report named ...NATIVESELECT still renders a plain
+        // <select> so that branch stays covered too.
+        const EXPENSE_TYPES = [
+            ["Ground Transportation", "Taxi, rideshare, rail and transit fares."],
+            ["Office Supplies", "Consumables such as paper, pens and folders."],
+            ["Lodging", "Hotel room charges and associated taxes."],
+            ["Meal", "Meals taken while travelling on university business."],
+            ["Software", "Application licenses, subscriptions and renewals."],
+            ["Software Maintenance", "Support contracts renewed annually."]
+        ];
+
+        function renderExpenseTypeField(t, idx) {
+            const current = t.expense_type || '';
+            if ((selectedReportName || '').includes('NATIVESELECT')) {
+                return `<label for="recon-type-${idx}">Expense Type</label>
+                    <select class="recon-type" style="width:100%;" id="recon-type-${idx}"
+                            data-nuiexp="field-expenseType">
+                        <option value="">Expense Type...</option>
+                        ${EXPENSE_TYPES.map(([n]) =>
+                            `<option value="${n}" ${current === n ? 'selected' : ''}>${n}</option>`).join('')}
+                    </select>`;
+            }
+            // No hidden input: real Concur has none, and an invisible element
+            // whose id contains "type" is matched by the pane-readiness selector,
+            // which then waits forever on something that can never be visible.
+            return `
+                <div data-nuiexp="field-expenseType" id="field-expenseType">
+                    <div class="sapcnqr-form-field__heading"><span
+                        class="sapcnqr-form-field__label">Expense Type</span><span
+                        class="sapcnqr-form-field__required">*</span></div>
+                    <div role="combobox" tabindex="0" aria-expanded="false"
+                         data-nuiexp="field-expenseType__trigger"
+                         style="border:1px solid #c9c9c9; padding:6px; cursor:pointer;"
+                         onclick="openTypePicker(${idx})">${current}</div>
+                </div>
+                <!-- Help text sharing the word "type". The old wildcard selector
+                     matched this and read it back as if it were the field. -->
+                <div data-nuiexp="expense-type-quicktips" style="font-size:11px; color:#5c646b;">
+                    InformationQuick TipsChoose the type that best describes the charge.Show Less
+                </div>
+                <div id="type-popup" class="sapcnqr-overlay__dialog" style="display:none;
+                     border:1px solid #c9c9c9; background:white; padding:8px; z-index:5000;">
+                    <input type="text" data-nuiexp="field-expenseType__input"
+                           id="type-search" placeholder="Search for an expense type"
+                           style="width:100%;" oninput="renderTypeOptions(${idx}, this.value)">
+                    <div class="sapcnqr-selection-list__list-box" role="listbox"
+                         id="type-listbox"></div>
+                </div>`;
+        }
+
+        function openTypePicker(idx) {
+            const popup = document.getElementById('type-popup');
+            if (!popup) return;
+            popup.style.display = 'block';
+            const trig = document.querySelector("[data-nuiexp='field-expenseType__trigger']");
+            if (trig) trig.setAttribute('aria-expanded', 'true');
+            renderTypeOptions(idx, '');
+        }
+
+        function renderTypeOptions(idx, filter) {
+            const box = document.getElementById('type-listbox');
+            if (!box) return;
+            const q = (filter || '').toLowerCase();
+            const current = currentExpenseType(idx);
+            box.innerHTML = EXPENSE_TYPES
+                .filter(([n]) => !q || n.toLowerCase().includes(q))
+                .map(([n, desc]) => `<div role="option" aria-selected="${n === current}"
+                        style="padding:4px; cursor:pointer;"
+                        onclick="pickExpenseType(${idx}, '${n.replace(/'/g, "\\\\'")}')"
+                        >${n}${desc}</div>`)
+                .join('') || '<div class="no-match">No matching expense types</div>';
+        }
+
+        function currentExpenseType(idx) {
+            const sel = document.getElementById(`recon-type-${idx}`);
+            if (sel && sel.tagName === 'SELECT') return sel.value || '';
+            const trig = document.querySelector("[data-nuiexp='field-expenseType__trigger']");
+            return trig ? (trig.textContent || '').trim() : '';
+        }
+
+        function pickExpenseType(idx, name) {
+            const trig = document.querySelector("[data-nuiexp='field-expenseType__trigger']");
+            if (trig) { trig.textContent = name; trig.setAttribute('aria-expanded', 'false'); }
+            const popup = document.getElementById('type-popup');
+            if (popup) popup.style.display = 'none';
         }
 
         // ---- Receipt panel -------------------------------------------------
@@ -584,7 +669,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         async function saveReconTransaction(reportName, idx) {
-            const expense_type = document.getElementById(`recon-type-${idx}`).value;
+            const expense_type = currentExpenseType(idx);
             const business_purpose = document.getElementById(`businessPurpose`).value;
             const comment = document.getElementById(`recon-comment`).value;
             const allocation_code = document.getElementById(`recon-allocation-${idx}`).value;
