@@ -57,6 +57,12 @@ class ConcurBrowserClient:
         "tr.sapMLIB",
     ]
 
+    # Proof that an expense's detail pane is actually open and editable.
+    # Deliberately narrow: .sapMInputBaseInner and .recon-type also match inputs
+    # in the list grid, so including them lets a merely-selected row read as
+    # open, which then skips every field write while reporting success.
+    PANE_READY_SELECTOR = "[data-nuiexp*='field'], input[id*='type']"
+
     def _collect_expense_rows(self, page, report_name: str = "", report_num: str = "Unknown"):
         """Return (rows, diagnostics) for a report's expense line items.
 
@@ -174,6 +180,217 @@ class ConcurBrowserClient:
         if not amount and not vendor:
             return "expense has neither amount nor vendor to verify against"
         return None
+
+    # Concur's receipt controls, discovered by probing the live DOM. There is no
+    # <input type="file"> anywhere on the page, so set_input_files has nothing to
+    # bind to -- the attach button opens a native file chooser instead, which is
+    # why every set_input_files-based path silently attached nothing.
+
+    # Receipt controls live in the expense's DETAIL PANE, not the grid row.
+    # The file inputs are hidden (aria-hidden, display:none) and Playwright can
+    # set files on them directly, which avoids driving the OS file picker.
+    RECEIPT_TAB_SELECTOR = "[data-nuiexp='receipt-tabs'] li[role='option']"
+    # Hidden file inputs. data-nuiexp differs between the empty and attached
+    # states ("upload-receipt"/"upload-file" vs "erc-inp-upload-file"), but the
+    # id is "upload-file" in both. Playwright can set files on hidden inputs, so
+    # the OS picker is never involved.
+    RECEIPT_UPLOAD_INPUT = ("#upload-file, input[data-nuiexp='erc-inp-upload-file'], "
+                            "input[data-nuiexp='upload-file'], "
+                            "input[data-nuiexp='upload-receipt']")
+    # Present only once a receipt is attached: Concur swaps the drop zone for a
+    # viewer carrying Remove/Add/Open and a filename.
+    RECEIPT_VIEWER_METADATA = "[data-nuiexp='receipt-viewer-metadata']"
+    RECEIPT_REMOVE_SELECTOR = "[data-nuiexp='receipt-viewer__detach']"
+
+    # The receipt area renders as an aria-live skeleton and hydrates
+    # asynchronously. Checking for controls before it settles is a race: the
+    # upload input may not exist yet, and the viewer metadata that confirms an
+    # attachment appears seconds late. Both states end in one of these.
+    RECEIPT_AREA_READY = ("[data-nuiexp='receipt-tabs'], [data-nuiexp='drag-drop-file'], "
+                          "[data-nuiexp='receipt-body'], "
+                          "[data-nuiexp='receipt-viewer-metadata'], #upload-receipt-button")
+
+    def _wait_for_receipt_area(self, page, timeout=20000):
+        """Block until the receipt panel has hydrated past its loading skeleton."""
+        try:
+            page.wait_for_selector(self.RECEIPT_AREA_READY, timeout=timeout)
+            page.wait_for_timeout(500)
+            return True
+        except Exception:
+            return False
+
+    def _select_receipt_tab(self, page, ctx):
+        """Focus the 'Receipt' tab, not 'Card Receipt'. Returns True if the Receipt
+        tab is selected (or there is no toggle at all), False if it could not be.
+
+        On a card transaction Concur defaults this toggle to 'Card Receipt', whose
+        pane carries its own file input. Uploading there is silently discarded, so
+        selecting the right tab is a correctness requirement, not cosmetic. The
+        toggle is not always inside the detail-pane container, so both scopes are
+        searched -- looking only at the pane found zero tabs and did nothing.
+        """
+        for scope in (ctx, page):
+            try:
+                tabs = scope.locator(self.RECEIPT_TAB_SELECTOR)
+                count = tabs.count()
+            except Exception:
+                continue
+            if count == 0:
+                continue
+            for i in range(count):
+                tab = tabs.nth(i)
+                try:
+                    if (tab.text_content() or "").strip() != "Receipt":
+                        continue
+                    if tab.get_attribute("aria-selected") == "true":
+                        return True
+                    tab.click()
+                    page.wait_for_timeout(1500)
+                    # Switching tabs re-renders the panel, so wait for the empty
+                    # state's own controls before anything reads an input.
+                    self._wait_for_receipt_area(page)
+                    return tab.get_attribute("aria-selected") == "true"
+                except Exception:
+                    continue
+            return False
+        # No toggle on this expense: the receipt panel is the only one.
+        return True
+
+    def _attached_receipt_name(self, page, ctx):
+        """Filename of the receipt currently attached, or None if there is none.
+
+        Checks the pane first, then the whole page: the receipt viewer is not
+        always rooted inside the detail-pane container.
+        """
+        for scope in (ctx, page):
+            try:
+                meta = scope.locator(f"{self.RECEIPT_VIEWER_METADATA} .filename").first
+                if meta.count() > 0:
+                    name = (meta.text_content() or "").strip()
+                    if name:
+                        return name
+            except Exception:
+                continue
+        return None
+
+    def _attach_receipt_in_pane(self, page, ctx, idx, receipt_path):
+        """Attach receipt_path to the expense whose detail pane is currently open,
+        replacing any receipt already there. Returns an error string, or None.
+
+        Addressed by the open pane rather than by merchant text: this report has
+        six rows sharing a merchant and two that are byte-identical, so no text
+        match can target them.
+        """
+        import os.path as _osp
+        want = _osp.basename(receipt_path)
+        try:
+            if not self._wait_for_receipt_area(page):
+                return (f"row {idx}: the receipt panel never finished loading, so "
+                        f"no upload was attempted")
+            if not self._select_receipt_tab(page, ctx):
+                return (f"row {idx}: could not switch from the 'Card Receipt' tab to "
+                        f"'Receipt'; uploading there would be discarded")
+
+            # Replace, don't append. A file input is present in BOTH states, so
+            # setting files while a receipt is attached would add a second one --
+            # Concur exposes that separately as "Add" (receipt-viewer__append).
+            # Remove the existing receipt first so the upload is a true overwrite.
+            # Only replace something we can actually name. A viewer with an empty
+            # filename is not an uploaded receipt -- on card transactions Concur
+            # renders a card e-receipt shell there -- and removing on that signal
+            # destroys a real receipt while attaching nothing in its place.
+            existing = self._attached_receipt_name(page, ctx)
+            if existing is not None:
+                err = self._remove_receipt_in_pane(page, ctx, idx, existing)
+                if err:
+                    return err
+                # Removing swaps the viewer back to the drop zone, which
+                # re-renders through the skeleton again. Without waiting, the
+                # input located next is the detached one from the previous
+                # render and the upload silently goes nowhere -- leaving the row
+                # with no receipt at all, having just deleted the old one.
+                if not self._wait_for_receipt_area(page):
+                    return (f"row {idx}: removed the existing receipt but the upload "
+                            f"panel never re-appeared; the row now has no receipt")
+                self._select_receipt_tab(page, ctx)
+
+            inp = None
+            for scope in (ctx, page):
+                loc = scope.locator(self.RECEIPT_UPLOAD_INPUT).first
+                if loc.count() > 0:
+                    inp = loc
+                    break
+            if inp is None:
+                return f"row {idx}: no receipt upload input found in the detail pane"
+
+            inp.set_input_files(receipt_path)
+            page.wait_for_timeout(3000)
+            self._dismiss_modals(page)
+
+            # Verify by filename rather than trusting the click. This also catches
+            # an accidental append, where the viewer would show the wrong name.
+            deadline = 30000
+            waited = 0
+            got = None
+            while waited < deadline:
+                got = self._attached_receipt_name(page, ctx)
+                if got == want:
+                    logger.info(f"  Attached receipt to row {idx}: {want}")
+                    return None
+                page.wait_for_timeout(1000)
+                waited += 1000
+            if got is None:
+                return (f"row {idx}: upload did not register -- no receipt is shown "
+                        f"after uploading {want}")
+            return (f"row {idx}: expected receipt '{want}' but the expense shows "
+                    f"'{got}'")
+        except Exception as e:
+            return f"receipt attach failed on row {idx}: {e}"
+
+    def _remove_receipt_in_pane(self, page, ctx, idx, existing_name=None):
+        """Remove the receipt attached to the open expense. Returns an error string,
+        or None on success.
+
+        Fails explicitly rather than falling through: a row must never be reported
+        as replaced while the original receipt is still attached.
+        """
+        try:
+            btn = ctx.locator(self.RECEIPT_REMOVE_SELECTOR).filter(visible=True).first
+            if btn.count() == 0:
+                btn = page.locator(self.RECEIPT_REMOVE_SELECTOR).filter(visible=True).first
+            if btn.count() == 0:
+                return (f"row {idx} already has a receipt "
+                        f"{'(' + existing_name + ') ' if existing_name else ''}"
+                        f"and no Remove control was found to replace it")
+            btn.click(force=True)
+            page.wait_for_timeout(1200)
+
+            confirm = page.locator(
+                "[role='alertdialog'] button:has-text('Remove'), "
+                "[role='alertdialog'] button:has-text('Delete'), "
+                "[role='alertdialog'] button:has-text('Yes'), "
+                "[role='dialog'] button:has-text('Remove'), "
+                "[role='dialog'] button:has-text('Delete'), "
+                "[role='dialog'] button:has-text('Confirm')"
+            ).filter(visible=True).first
+            if confirm.count() > 0:
+                confirm.click()
+                page.wait_for_timeout(1500)
+            self._dismiss_modals(page)
+
+            # Confirm it actually went, so a failed removal cannot masquerade as a
+            # successful replace.
+            waited = 0
+            while waited < 10000:
+                if self._attached_receipt_name(page, ctx) is None:
+                    logger.info(f"  Removed existing receipt from row {idx}.")
+                    return None
+                page.wait_for_timeout(1000)
+                waited += 1000
+            return (f"row {idx}: receipt still attached after Remove "
+                    f"({self._attached_receipt_name(page, ctx)})")
+        except Exception as e:
+            return f"receipt removal failed on row {idx}: {e}"
 
     def _dismiss_modals(self, page):
         """Aggressively dismisses common SAP Concur overlays."""
@@ -3504,7 +3721,21 @@ class ConcurBrowserClient:
                 valid_rows, _ = self._collect_expense_rows(page, report_name)
                 logger.info(f"Discovered {len(valid_rows)} transaction row(s) in Concur.")
 
-                for exp in sorted(expenses, key=lambda e: e.get("index", 0)):
+                for row_ordinal, exp in enumerate(
+                        sorted(expenses, key=lambda e: e.get("index", 0))):
+                    # Reload the report before every row after the first. Closing
+                    # the detail pane does not tear down the receipt viewer, so
+                    # the next row opens with the previous row's receipt still in
+                    # the DOM -- every later row then reads that filename as its
+                    # own attachment and tries to replace a receipt it does not
+                    # have. Re-navigating is the only reliable reset.
+                    if row_ordinal > 0:
+                        page.goto(f"{self.base_url}/nui/expense", timeout=45000)
+                        self._wait_for_dashboard(page)
+                        self._open_report_by_name(page, report_name)
+                        self._dismiss_modals(page)
+                        valid_rows, _ = self._collect_expense_rows(page, report_name)
+
                     # 1-based and dense, the same space `report show` emits and
                     # `txn update` accepts. This previously read the index as a
                     # 0-based offset into a differently-filtered list, so a
@@ -3558,33 +3789,67 @@ class ConcurBrowserClient:
 
                         row = current_valid_rows[idx - 1]
                         row.scroll_into_view_if_needed()
-                        
+
+                        # Click the row BODY, never its checkbox. Every row carries a
+                        # "Select expense" checkbox, and clicking that only toggles
+                        # bulk selection -- it never opens the detail pane, so this
+                        # loop used to exhaust all three attempts and fail every row
+                        # with "Failed to open row". This is the escalation the deep
+                        # scan uses (see get_report_details), which does open panes.
                         try:
-                            cb = row.locator(".sapMCb, [type='checkbox']").first
-                            if cb.count() > 0:
-                                cb.click(force=True)
-                            else:
-                                row.click(force=True)
-                            page.wait_for_timeout(2000)
-                            
-                            if page.locator("[data-nuiexp*='field'], input[id*='type'], .sapMInputBaseInner, .recon-type").filter(visible=True).count() > 0:
-                                selection_successful = True
-                                break
+                            row.click(force=True)
+                            page.wait_for_timeout(500)
                         except: pass
-                        
-                        # Try Edit button
-                        edit_btn = page.locator("[data-nuiexp='edit-button'], button:has-text('Edit'), .sapMBtn:has-text('Edit')").filter(visible=True).first
-                        if edit_btn.count() > 0 and edit_btn.is_visible():
-                            try:
-                                edit_btn.wait_for_element_state("enabled", timeout=2000)
+
+                        # Escalate: toolbar Edit -> row kebab -> double click. These
+                        # run unconditionally after the row click, because a click
+                        # that merely selects still needs a real open action.
+                        try:
+                            edit_btn = page.locator(
+                                "[data-nuiexp='edit-button'], button:has-text('Edit'), "
+                                "#edit-transaction-btn, .sapMBtn:has-text('Edit')"
+                            ).filter(visible=True).first
+                            if edit_btn.count() > 0 and edit_btn.is_enabled():
                                 edit_btn.click(force=True)
-                                page.wait_for_timeout(2000)
-                                selection_successful = True
-                                break
+                        except: pass
+
+                        if page.locator(self.PANE_READY_SELECTOR).count() == 0:
+                            try:
+                                actions_btn = row.locator(
+                                    "[data-nui-widgets='menu-button-trigger'], "
+                                    ".entries-list-actions-button, button[aria-label='Actions']"
+                                ).first
+                                if actions_btn.count() > 0:
+                                    actions_btn.click(force=True)
+                                    menu_item = page.locator(
+                                        ".sapMMenuItemText:has-text('Edit'), "
+                                        ".sapMMenuItemText:has-text('Open'), "
+                                        "[role='menuitem']:has-text('Edit')"
+                                    ).first
+                                    if menu_item.count() > 0:
+                                        menu_item.click()
                             except: pass
-                            
+
+                        if page.locator(self.PANE_READY_SELECTOR).count() == 0:
+                            try:
+                                row.dblclick(force=True)
+                            except: pass
+
+                        # Confirm the pane is actually open before claiming success.
+                        # The old code set selection_successful right after clicking
+                        # Edit without waiting, so it could "succeed" into a missing
+                        # pane and then silently skip every field write. The readiness
+                        # selector is deliberately narrow: .sapMInputBaseInner and
+                        # .recon-type also match the list grid, so a merely-selected
+                        # row would read as open.
+                        try:
+                            page.wait_for_selector(self.PANE_READY_SELECTOR, timeout=3000)
+                            selection_successful = True
+                            break
+                        except: pass
+
                     if not selection_successful:
-                        logger.error(f"Failed to open transaction row {idx+1}")
+                        logger.error(f"Failed to open transaction row {idx}")
                         results.append({"index": idx, "success": False, "error": "Failed to open row"})
                         continue
                         
@@ -3646,24 +3911,21 @@ class ConcurBrowserClient:
                             inp_comment.fill("")
                             inp_comment.fill(comment)
                             
-                    # Upload Receipt File if specified
+                    # Receipt upload happens here, while the detail pane is open:
+                    # the upload controls are rendered inside the pane, and the
+                    # file inputs are hidden, so files are set on them directly
+                    # rather than by driving the OS picker.
                     receipt_path = exp.get("receipt_file_path") or exp.get("receipt_file")
+                    receipt_error = None
                     if receipt_path:
-                        if os.path.exists(receipt_path):
-                            logger.info(f"  Uploading receipt file: {receipt_path}")
-                            input_file = input_context.locator("input.recon-receipt-file, input[type='file'], input[id*='receipt']").first
-                            if input_file.count() > 0:
-                                try:
-                                    input_file.set_input_files(receipt_path)
-                                    page.wait_for_timeout(2000)
-                                    logger.info(f"  Successfully attached receipt: {receipt_path}")
-                                except Exception as e:
-                                    logger.warning(f"  Failed to attach receipt: {e}")
-                            else:
-                                logger.warning(f"  Could not find receipt file input field for row {idx+1}")
+                        if not os.path.exists(receipt_path):
+                            receipt_error = f"receipt file not found locally: {receipt_path}"
+                            logger.warning(f"  {receipt_error}")
                         else:
-                            logger.warning(f"  Receipt file path does not exist locally: {receipt_path}")
-                            
+                            receipt_error = self._attach_receipt_in_pane(
+                                page, input_context, idx, receipt_path)
+
+
                     # Save
                     save_btn_selectors = [
                         "[data-nuiexp='exp-save-expense']",
@@ -3682,14 +3944,21 @@ class ConcurBrowserClient:
                             saved = True
                             break
                             
-                    if saved:
-                        logger.info(f"Successfully updated and saved Row {idx+1}.")
-                        results.append({"index": idx, "success": True})
-                    else:
-                        logger.warning(f"Could not find Save button for Row {idx+1}. Closing pane.")
+                    if not saved:
+                        logger.warning(f"Could not find Save button for Row {idx}. Closing pane.")
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(1000)
                         results.append({"index": idx, "success": False, "error": "Could not find Save button"})
+                    elif receipt_error:
+                        # Field edits saved, but the receipt did not attach. Report
+                        # the row as failed: a caller uploading receipts cares that
+                        # the receipt landed, and a bare success here would be a
+                        # silent omission on a financial record.
+                        logger.warning(f"Saved Row {idx}, but receipt did not attach.")
+                        results.append({"index": idx, "success": False, "error": receipt_error})
+                    else:
+                        logger.info(f"Successfully updated and saved Row {idx}.")
+                        results.append({"index": idx, "success": True})
                 
                 return {"success": True, "results": results}
                 

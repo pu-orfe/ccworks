@@ -319,6 +319,10 @@ def build_parser():
     r_apply.add_argument("--include-incomplete", action="store_true",
                          help="Also write rows listed in extraction.deep_scan_failures, whose "
                               "captured fields are known to be incomplete (default: skip them)")
+    r_apply.add_argument("--headed", action="store_true",
+                         help="Run the browser visibly rather than headlessly, to watch what "
+                              "a write actually does in Concur. Diagnostic only: the write "
+                              "path behaves identically either way")
 
     # ---------------- txn ----------------
     txn = add_group("txn", "Transactions within a report")
@@ -1394,9 +1398,11 @@ def run_tests():
                     print(f"[*] Transactions: {len(expenses)}")
                     print("-" * 60)
                     
-                with Spinner(f"Applying JSON updates to report '{report_name_val}' headlessly..."):
+                headless = not args.headed
+                mode = "headlessly" if headless else "in a visible browser"
+                with Spinner(f"Applying JSON updates to report '{report_name_val}' {mode}..."):
                     browser_client = ConcurBrowserClient()
-                    res = browser_client.apply_json_updates(report_name=report_name_val, expenses=expenses, headless=True)
+                    res = browser_client.apply_json_updates(report_name=report_name_val, expenses=expenses, headless=headless)
                 
                 summary = f"\n[SUCCESS] Custom JSON updates successfully applied to Concur!\n"
                 summary += "=" * 60
