@@ -280,18 +280,29 @@ class TestFieldEditsStillWork(ReceiptAttachTestCase):
         self.assertEqual("Lab shipping", row.get("business_purpose"),
                          "the field write must survive the receipt upload")
         self.assertEqual("Q3 restock", row.get("comment"))
+        self.assertEqual("Software", row.get("expense_type"))
         self.assertEqual("both.pdf", row.get("receipt"))
 
-    @unittest.expectedFailure
-    def test_expense_type_is_written_by_apply_json(self):
-        """Known defect, unrelated to receipts: apply-json never writes expense_type.
+    def test_a_field_that_does_not_take_fails_the_row(self):
+        """An expense type the pane will not accept must fail, not report success."""
+        res = self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_C, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "expense_type": "No Such Expense Type",
+        }])
+        row = res["results"][0]
+        self.assertFalse(row["success"],
+                         "a type that never took must not be reported as written")
+        self.assertIn("expense type", row["error"].lower())
 
-        Reproduces with no receipt in the payload at all -- business_purpose lands
-        and expense_type does not, while the row still reports success: true. That
-        is a silent omission on a financial record, the same shape as the receipt
-        bugs this module covers. Marked expected-failure so it stays visible in the
-        suite until the write path (or the mock's field markup, if the gap is
-        there) is fixed, rather than being papered over by dropping the assertion.
+    def test_expense_type_is_written_by_apply_json(self):
+        """apply-json used to drop expense_type silently while reporting success.
+
+        After `select_option`, focus remained on the Edit button that opened the
+        pane, so the unconditional Enter in the keyboard fallback re-activated it,
+        re-rendered the pane, and reverted the selection. business_purpose was
+        written afterwards and therefore survived, which is what made the loss look
+        field-specific. The keyboard fallback now runs only in the combobox branch,
+        and the value is read back.
         """
         self.apply(self.REPORT, [{
             "index": self.ROW_DUP_B, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",

@@ -210,6 +210,165 @@ class ConcurBrowserClient:
                           "[data-nuiexp='receipt-body'], "
                           "[data-nuiexp='receipt-viewer-metadata'], #upload-receipt-button")
 
+    # One definition of the editable fields on an expense, shared by every write
+    # path. These were duplicated per-caller, and the copies drifted: one grew a
+    # read-back check and a re-focus after clearing, the others did not, so the
+    # same edit succeeded through one command and silently vanished through
+    # another.
+    TYPE_FIELD_SELECTORS = ("select.recon-type, select[data-nuiexp*='type'], "
+                            "select[id*='type'], [data-nuiexp*='type']:not([id*='header']), "
+                            "input[id*='type']:not([id*='header']), "
+                            ".sapMInputBaseInner[id*='type']")
+    PURPOSE_FIELD_SELECTORS = ("[data-nuiexp='field-businessPurpose'], input#businessPurpose, "
+                               "input.recon-purpose, input[id*='usinessPurpose']")
+    COMMENT_FIELD_SELECTORS = ("[data-nuiexp='field-comment'], textarea#comment, "
+                               "textarea.recon-comment, textarea[id*='omment']")
+    SUGGESTION_ITEM_SELECTORS = (".sapMStandardListItem, .sapMLIB, [role='listitem'], "
+                                 "[role='option'], li")
+
+    SAVE_BUTTON_SELECTORS = (
+        "[data-nuiexp='exp-save-expense']",
+        "button[data-nuiexp='exp-save-expense']",
+        "button.recon-save-btn",
+        "button:has-text('Save Expense')",
+        "button.sapcnqr-button:has-text('Save Expense')",
+        "button.sapMBtn:has-text('Save')",
+        "button:has-text('Save')",
+        "button[data-nuiexp='save-button']",
+    )
+
+    def _click_save_expense(self, page, ctx=None):
+        """Save the open expense. Returns (saved, error).
+
+        Only one of the three copies this replaces checked for the validation
+        dialog Concur raises when it rejects a save; the others treated the click
+        itself as proof and reported a rejected save as a successful one.
+        """
+        scope = ctx if ctx is not None else page
+        for sel in self.SAVE_BUTTON_SELECTORS:
+            try:
+                btn = scope.locator(sel).first
+                if btn.count() == 0 or not btn.is_visible():
+                    continue
+                try:
+                    btn.wait_for_element_state("enabled", timeout=3000)
+                except Exception:
+                    pass
+                btn.click(force=True)
+                page.wait_for_timeout(2500)
+
+                modal = page.locator(".sapMDialog, .sapMMessageBox, [role='dialog']").filter(
+                    has_text=re.compile(r"Error|provide valid information", re.I)).first
+                if modal.count() > 0 and modal.is_visible(timeout=2000):
+                    msg = (modal.text_content() or "").strip()[:150]
+                    close = modal.locator(
+                        "button:has-text('Close'), button:has-text('OK')").first
+                    if close.count() > 0:
+                        close.click()
+                    else:
+                        page.keyboard.press("Escape")
+                    return False, f"save rejected by Concur: {msg}"
+
+                logger.info(f"  Saved via {sel}")
+                return True, None
+            except Exception:
+                continue
+        return False, "Could not find Save button"
+
+    def _set_expense_type(self, page, ctx, expense_type):
+        """Set the expense type on the open pane. Returns an error string, or None.
+
+        Handles both a native <select> and Concur's searchable combobox. The
+        keyboard fallback is confined to the combobox branch: `select_option`
+        leaves focus wherever it was -- on the Edit button that opened the pane --
+        so an unconditional Enter re-activated that button, re-rendered the pane,
+        and silently reverted the selection that had just been made.
+        """
+        field = ctx.locator(self.TYPE_FIELD_SELECTORS).filter(visible=True).first
+        if field.count() == 0:
+            return f"expense type field not found (wanted {expense_type!r})"
+        try:
+            if field.evaluate("el => el.tagName.toLowerCase()") == "select":
+                field.select_option(label=expense_type)
+            else:
+                field.click(force=True)
+                page.wait_for_timeout(500)
+                clear_btn = page.locator("[data-nuiexp='field-expenseType__clear']").first
+                if clear_btn.count() > 0 and clear_btn.is_visible():
+                    clear_btn.click()
+                    page.wait_for_timeout(500)
+                    # The clear button takes focus with it; without re-focusing the
+                    # field the keystrokes below land on nothing.
+                    trigger = page.locator("[data-nuiexp='field-expenseType__trigger']").first
+                    if trigger.count() > 0:
+                        trigger.click()
+                page.keyboard.press("Control+A")
+                page.keyboard.press("Backspace")
+                # Type the value so the suggestion list is actually filtered.
+                # Selecting from an unfiltered list commits whichever option is
+                # highlighted, which writes the wrong expense type.
+                page.keyboard.type(expense_type, delay=50)
+                page.wait_for_timeout(1500)
+
+                item = page.locator(self.SUGGESTION_ITEM_SELECTORS).filter(
+                    has_text=re.compile(f"^{re.escape(expense_type)}$", re.I)).first
+                if item.count() > 0 and item.is_visible():
+                    item.click(force=True)
+                else:
+                    page.keyboard.press("ArrowDown")
+                    page.wait_for_timeout(500)
+                    page.keyboard.press("Enter")
+                page.wait_for_timeout(1000)
+                page.keyboard.press("Tab")
+            page.wait_for_timeout(800)
+        except Exception as e:
+            return f"failed to set expense type {expense_type!r}: {e}"
+
+        # Read back. Without this the caller cannot tell a write from a no-op,
+        # which is how the reverted selection went unnoticed.
+        try:
+            current = field.input_value()
+        except Exception:
+            current = field.text_content() or ""
+        current = (current or "").split("\n")[0].strip()
+        if expense_type.lower() not in current.lower():
+            return (f"expense type did not take: wanted {expense_type!r}, "
+                    f"field shows {current!r}")
+        return None
+
+    def _fill_text_field(self, ctx, selectors, value, label):
+        """Set one text field, replacing its contents. Returns an error, or None."""
+        field = ctx.locator(selectors).filter(visible=True).first
+        if field.count() == 0:
+            return f"{label} field not found"
+        try:
+            field.fill("")
+            field.fill(value)
+        except Exception as e:
+            return f"failed to set {label}: {e}"
+        return None
+
+    def _write_expense_fields(self, page, ctx, expense_type=None, purpose=None, comment=None):
+        """Apply the field edits to the open pane. Returns a list of error strings.
+
+        Absent (None) means leave the field alone; "" means clear it.
+        """
+        errors = []
+        if expense_type is not None and expense_type != "":
+            err = self._set_expense_type(page, ctx, expense_type)
+            if err:
+                errors.append(err)
+        if purpose is not None:
+            err = self._fill_text_field(ctx, self.PURPOSE_FIELD_SELECTORS, purpose,
+                                        "business purpose")
+            if err:
+                errors.append(err)
+        if comment is not None:
+            err = self._fill_text_field(ctx, self.COMMENT_FIELD_SELECTORS, comment, "comment")
+            if err:
+                errors.append(err)
+        return errors
+
     def _wait_for_receipt_area(self, page, timeout=20000):
         """Block until the receipt panel has hydrated past its loading skeleton."""
         try:
@@ -1243,10 +1402,6 @@ class ConcurBrowserClient:
 
                         # Focus on the detail pane/side panel
                         detail_pane = page.locator("#sapcnqr-layout-side-panel-elements, .sapcnqr-layout-side-panel__elements, .ere__dynamic-main-content").filter(visible=True).first
-                        # Find the Expense Type field (it's often a combobox/dropdown)
-                        # We use a broad search within the visible container to handle different Fiori layouts
-                        type_field = page.locator("[data-nuiexp*='type']:not([id*='header']), input[id*='type']:not([id*='header']), .sapMInputBaseInner[id*='type']:not([id*='header']), select[id*='type']").filter(visible=True).first
-
                         if detail_pane.count() == 0:
                             # Fallback to whole page if specific pane ID not found
                             detail_pane = page
@@ -1257,162 +1412,32 @@ class ConcurBrowserClient:
                         # Use a more robust approach to find inputs in the detail pane
                         input_context = detail_pane if detail_pane.count() > 0 else page
                         
-                        # Fill in the fields
-                        if expense_type is not None:
-                            updates_attempted += 1
-                            # Search for the expense type input - broadened selectors
-                            type_selectors = [
-                                "select.recon-type",
-                                "select[data-nuiexp*='type']",
-                                "select[id*='type']",
-                                "[data-nuiexp*='type']:not([id*='header'])",
-                                "input[id*='type']:not([id*='header'])",
-                                ".sapMInputBaseInner[id*='type']"
-                            ]
-                            inp_type = input_context.locator(", ".join(type_selectors)).filter(visible=True).first
-                            
-                            if inp_type.count() > 0:
-                                try:
-                                    logger.info(f"  [{current_idx}] Attempting to update expense type: {expense_type}")
-                                    tag_name = inp_type.evaluate("el => el.tagName.toLowerCase()")
-                                    if tag_name == "select":
-                                        inp_type.select_option(label=expense_type)
-                                    else:
-                                        # Click the field to focus
-                                        inp_type.click(force=True)
-                                        page.wait_for_timeout(500)
-                                        
-                                        # Look for a clear button if it exists
-                                        clear_btn = page.locator("[data-nuiexp='field-expenseType__clear']").first
-                                        if clear_btn.count() > 0 and clear_btn.is_visible():
-                                            clear_btn.click()
-                                            page.wait_for_timeout(500)
-                                            # Re-click the trigger to focus after clear
-                                            trigger = page.locator("[data-nuiexp='field-expenseType__trigger']").first
-                                            if trigger.count() > 0: trigger.click()
-                                        
-                                        # Clear manually just in case
-                                        page.keyboard.press("Control+A")
-                                        page.keyboard.press("Backspace")
-                                    # Look for the matching item in the dropdown list (Fiori specific)
-                                    list_item = page.locator(".sapMStandardListItem, .sapMLIB, [role='listitem'], .sapMComboBoxBaseItem, .suggestion-item, .sapMSelectListItem, .sapMListUl li").filter(has_text=re.compile(f"^{re.escape(expense_type)}$", re.I)).first
-                                    
-                                    if list_item.count() > 0 and list_item.is_visible():
-                                        list_item.click(force=True)
-                                        logger.info(f"  [{current_idx}] Selected matching item from dropdown list")
-                                    else:
-                                        # Native fallback: ArrowDown and Enter
-                                        logger.info(f"  [{current_idx}] No list match found, using ArrowDown + Enter")
-                                        page.keyboard.press("ArrowDown")
-                                        page.wait_for_timeout(500)
-                                        page.keyboard.press("Enter")
-                                    
-                                    page.wait_for_timeout(1000)
-                                    # CRITICAL: Press Tab to blur and trigger validation
-                                    page.keyboard.press("Tab")
-                                    page.wait_for_timeout(1000)
-                                    
-                                    # VERIFY IT STUCK visually/via text
-                                    val_after = inp_type.text_content() or ""
-                                    page.wait_for_timeout(500)
-                                    
-                                    current_val = inp_type.input_value() or inp_type.text_content() or ""
-                                    if current_val and "\n" in current_val:
-                                        current_val = current_val.split("\n")[0].strip()
-                                        
-                                    if expense_type.lower() not in current_val.lower():
-                                        logger.warning(f"  [{current_idx}] Warning: Selection might not have stuck. Target: {expense_type}, Current: {current_val}")
-                                        # For critical failure (like test_03), we should mark result as failed
-                                        # But on live sites, sometimes the text match is fuzzy. 
-                                        # We'll allow it if it's not the placeholder.
-                                        if "type..." in current_val.lower() or current_val.strip() == "":
-                                            results[current_idx-1]["success"] = False
-                                            results[current_idx-1]["validation_error"] = f"Failed to select type: {expense_type}"
-                                    else:
-                                        updates_found += 1
-                                        logger.info(f"  [{current_idx}] Selection verified: {current_val}")
-                                    
-                                    self._take_screenshot(page, f"transaction_{current_idx}_after_type_selection")
-                                except Exception as e:
-                                    logger.error(f"  [{current_idx}] Failed to update expense type: {e}")
-                                    results[current_idx-1]["success"] = False
-                            else:
-                                logger.warning(f"  [{current_idx}] Could not find Expense Type field using precise selectors.")
+                        # Same writer the JSON path uses. These blocks were
+                        # duplicated and had drifted: only this copy verified the
+                        # expense type, so the other silently dropped it.
+                        field_errors = self._write_expense_fields(
+                            page, input_context, expense_type=expense_type,
+                            purpose=business_purpose, comment=comment)
+                        updates_attempted = sum(
+                            1 for v in (expense_type, business_purpose, comment)
+                            if v is not None)
+                        updates_found = updates_attempted - len(field_errors)
+                        for err in field_errors:
+                            logger.warning(f"  [{current_idx}] {err}")
+                            results[current_idx-1]["success"] = False
+                            results[current_idx-1]["validation_error"] = err
 
-                        if business_purpose is not None:
-                            updates_attempted += 1
-                            # Use precise selector for business purpose
-                            inp_purpose = page.locator("[data-nuiexp='field-businessPurpose'], input#businessPurpose").first
-                            if inp_purpose.count() > 0:
-                                inp_purpose.click(force=True)
-                                inp_purpose.fill("")
-                                inp_purpose.fill(business_purpose)
-                                logger.info(f"  [{current_idx}] Updated business purpose")
-                                updates_found += 1
-                            else:
-                                logger.warning(f"  [{current_idx}] Could not find Business Purpose field using precise selectors.")
-
-                        if comment is not None:
-                            updates_attempted += 1
-                            # Use precise selector for comment
-                            inp_comment = page.locator("[data-nuiexp='field-comment'], textarea#comment").first
-                            if inp_comment.count() > 0:
-                                inp_comment.click(force=True)
-                                inp_comment.fill("")
-                                inp_comment.fill(comment)
-                                logger.info(f"  [{current_idx}] Updated comment")
-                                updates_found += 1
-                            else:
-                                logger.warning(f"  [{current_idx}] Could not find Comment field using precise selectors.")
 
                         # Save the changes
-                        save_btn_selectors = [
-                            "[data-nuiexp='exp-save-expense']",
-                            "button[data-nuiexp='exp-save-expense']",
-                            "button:has-text('Save Expense')",
-                            "button.sapcnqr-button:has-text('Save Expense')",
-                            "button.sapMBtn:has-text('Save')", 
-                            "button:has-text('Save')", 
-                            "button[data-nuiexp='save-button']"
-                        ]
-                        
-                        saved = False
-                        for sel in save_btn_selectors:
-                            try:
-                                btn = page.locator(sel).first
-                                if btn.count() > 0 and btn.is_visible():
-                                    # Check if enabled
-                                    try:
-                                        btn.wait_for_element_state("enabled", timeout=3000)
-                                    except: pass
-                                    
-                                    btn.click(force=True)
-                                    page.wait_for_timeout(2000)
-                                    
-                                    # Check if an error modal appeared (blocking save)
-                                    error_modal = page.locator(".sapMDialog, [role='dialog']").filter(has_text=re.compile(r"Error|provide valid information", re.I)).first
-                                    if error_modal.count() > 0 and error_modal.is_visible(timeout=2000):
-                                        modal_msg = error_modal.text_content() or ""
-                                        logger.error(f"  [{current_idx}] Save failed with error modal: {modal_msg.strip()[:100]}...")
-                                        # Dismiss modal
-                                        close_btn = error_modal.locator("button:has-text('Close'), button:has-text('OK')").first
-                                        if close_btn.count() > 0: close_btn.click()
-                                        else: page.keyboard.press("Escape")
-                                        saved = False # Reset saved status
-                                        break # Don't try other save buttons if one triggered an error
-                                    
-                                    saved = True
-                                    logger.info(f"  [{current_idx}] Clicked Save button: {sel}")
-                                    break
-                            except:
-                                continue
-                        
+                        saved, save_error = self._click_save_expense(page)
                         if not saved:
-                            # Try one last ditch effort: press Enter on the page
-                            logger.warning(f"  [{current_idx}] Save button not found or visible. Trying Enter key.")
-                            page.keyboard.press("Enter")
-                            page.wait_for_timeout(2000)
-                            saved = True # Assume success if we reached here
+                            # This used to press Enter and then set saved = True
+                            # regardless ("assume success if we reached here"),
+                            # which reported an unsaved edit as saved. A save that
+                            # could not be performed is a failure.
+                            logger.error(f"  [{current_idx}] {save_error}")
+                            results[current_idx-1]["success"] = False
+                            results[current_idx-1]["validation_error"] = save_error
 
                         if saved:
                             logger.info(f"  [{current_idx}] Changes saved.")
@@ -3347,22 +3372,17 @@ class ConcurBrowserClient:
                     # Target inputs - check both row and page (for side panel)
                     input_context = page if not has_inline_inputs else row
                     
-                    # Expense Type
-                    sel_type = input_context.locator("select.recon-type, select[data-nuiexp*='type'], select[id*='type'], select.sapMSelect").first
-                    if sel_type.count() > 0:
-                        sel_type.select_option(label=matched_rule.get("expense_type", ""))
-                    
-                    # Business Purpose
-                    # Using more specific selectors to avoid matching static spans like #detail-purpose
-                    inp_purpose = input_context.locator("input.recon-purpose, input[data-nuiexp*='businessPurpose'], input[id*='purpose'], textarea[id*='purpose']").first
-                    if inp_purpose.count() > 0:
-                        inp_purpose.fill(matched_rule.get("business_purpose", ""))
-                    
-                    # Comment
-                    inp_comment = input_context.locator("input.recon-comment, textarea.recon-comment, [data-nuiexp*='comment'], textarea[id*='comment']").first
-                    if inp_comment.count() > 0:
-                        inp_comment.fill(matched_rule.get("comment", ""))
-                    
+                    # Same writer the other two paths use. This copy had no
+                    # read-back at all, so a rule that matched but never applied
+                    # still counted as reconciled.
+                    field_errors = self._write_expense_fields(
+                        page, input_context,
+                        expense_type=matched_rule.get("expense_type"),
+                        purpose=matched_rule.get("business_purpose"),
+                        comment=matched_rule.get("comment"))
+                    if field_errors:
+                        logger.warning(f"  Transaction '{raw_text}': " + "; ".join(field_errors))
+
                     # Allocation Code
                     inp_alloc = input_context.locator("input.recon-allocation, input[id*='allocation']").first
                     if inp_alloc.count() > 0:
@@ -3382,22 +3402,9 @@ class ConcurBrowserClient:
                                 logger.warning(f"  Could not find receipt upload input for '{raw_text}'.")
                     
                     # Save this transaction
-                    save_btn_selectors = [
-                        "button.recon-save-btn",
-                        "button[data-nuiexp='exp-save-expense']",
-                        "button:has-text('Save Expense')",
-                        "button.sapMBtn:has-text('Save')",
-                        "button:has-text('Save')"
-                    ]
-                    saved = False
-                    for sel in save_btn_selectors:
-                        btn = input_context.locator(sel).first
-                        if btn.count() > 0 and btn.is_visible():
-                            btn.click()
-                            page.wait_for_timeout(2000)
-                            logger.info(f"  Saved transaction '{raw_text}' using selector: {sel}")
-                            saved = True
-                            break
+                    saved, save_error = self._click_save_expense(page, input_context)
+                    if not saved:
+                        logger.warning(f"  Transaction '{raw_text}': {save_error}")
                     
                     if not saved and not has_inline_inputs:
                         # Try closing the pane if we can't save
@@ -3857,60 +3864,16 @@ class ConcurBrowserClient:
                     detail_pane = page.locator("#sapcnqr-layout-side-panel-elements, .sapcnqr-layout-side-panel__elements, .ere__dynamic-main-content").filter(visible=True).first
                     input_context = detail_pane if detail_pane.count() > 0 else page
                     
-                    # Fill Expense Type
-                    if expense_type:
-                        type_selectors = [
-                            "select.recon-type",
-                            "select[data-nuiexp*='type']",
-                            "select[id*='type']",
-                            "[data-nuiexp*='type']:not([id*='header'])",
-                            "input[id*='type']:not([id*='header'])",
-                            ".sapMInputBaseInner[id*='type']"
-                        ]
-                        inp_type = input_context.locator(", ".join(type_selectors)).filter(visible=True).first
-                        if inp_type.count() > 0:
-                            try:
-                                tag_name = inp_type.evaluate("el => el.tagName.toLowerCase()")
-                                if tag_name == "select":
-                                    inp_type.select_option(label=expense_type)
-                                else:
-                                    inp_type.click(force=True)
-                                    page.wait_for_timeout(500)
-                                    clear_btn = page.locator("[data-nuiexp='field-expenseType__clear']").first
-                                    if clear_btn.count() > 0 and clear_btn.is_visible():
-                                        clear_btn.click()
-                                        page.wait_for_timeout(500)
-                                    page.keyboard.press("Control+A")
-                                    page.keyboard.press("Backspace")
-                                    
-                                list_item = page.locator(".sapMStandardListItem, .sapMLIB, [role='listitem'], .sapMComboBoxBaseItem, .suggestion-item, .sapMSelectListItem, .sapMListUl li").filter(has_text=re.compile(f"^{re.escape(expense_type)}$", re.I)).first
-                                if list_item.count() > 0 and list_item.is_visible():
-                                    list_item.click(force=True)
-                                else:
-                                    page.keyboard.press("ArrowDown")
-                                    page.wait_for_timeout(500)
-                                    page.keyboard.press("Enter")
-                                page.keyboard.press("Tab")
-                                page.wait_for_timeout(1000)
-                            except Exception as e:
-                                logger.warning(f"Failed to set type: {e}")
-                                
-                    # Fill Business Purpose
-                    if purpose is not None:
-                        inp_purpose = page.locator("[data-nuiexp='field-businessPurpose'], input#businessPurpose").first
-                        if inp_purpose.count() > 0:
-                            inp_purpose.click(force=True)
-                            inp_purpose.fill("")
-                            inp_purpose.fill(purpose)
-                            
-                    # Fill Comment
-                    if comment is not None:
-                        inp_comment = page.locator("[data-nuiexp='field-comment'], textarea#comment").first
-                        if inp_comment.count() > 0:
-                            inp_comment.click(force=True)
-                            inp_comment.fill("")
-                            inp_comment.fill(comment)
-                            
+                    # One shared writer for every field, with read-back built in.
+                    # These edits were previously inlined here and in
+                    # update_report_transaction, and only that copy verified the
+                    # result -- so a type that silently reverted was invisible.
+                    field_errors = self._write_expense_fields(
+                        page, input_context, expense_type=expense_type,
+                        purpose=purpose, comment=comment)
+                    if field_errors:
+                        logger.warning(f"Row {idx}: " + "; ".join(field_errors))
+
                     # Receipt upload happens here, while the detail pane is open:
                     # the upload controls are rendered inside the pane, and the
                     # file inputs are hidden, so files are set on them directly
@@ -3927,28 +3890,19 @@ class ConcurBrowserClient:
 
 
                     # Save
-                    save_btn_selectors = [
-                        "[data-nuiexp='exp-save-expense']",
-                        "button[data-nuiexp='exp-save-expense']",
-                        "button:has-text('Save Expense')",
-                        "button.sapMBtn:has-text('Save')",
-                        "button:has-text('Save')",
-                        "button.recon-save-btn"
-                    ]
-                    saved = False
-                    for sel in save_btn_selectors:
-                        btn = input_context.locator(sel).first
-                        if btn.count() > 0 and btn.is_visible():
-                            btn.click()
-                            page.wait_for_timeout(3000)
-                            saved = True
-                            break
-                            
+                    saved, save_error = self._click_save_expense(page, input_context)
+
                     if not saved:
-                        logger.warning(f"Could not find Save button for Row {idx}. Closing pane.")
+                        logger.warning(f"Row {idx}: {save_error}. Closing pane.")
                         page.keyboard.press("Escape")
                         page.wait_for_timeout(1000)
-                        results.append({"index": idx, "success": False, "error": "Could not find Save button"})
+                        results.append({"index": idx, "success": False, "error": save_error})
+                    elif field_errors:
+                        # A field that did not take must fail the row. Reporting
+                        # success here is how a silently reverted expense type
+                        # went unnoticed on a submitted report.
+                        results.append({"index": idx, "success": False,
+                                        "error": "; ".join(field_errors)})
                     elif receipt_error:
                         # Field edits saved, but the receipt did not attach. Report
                         # the row as failed: a caller uploading receipts cares that
