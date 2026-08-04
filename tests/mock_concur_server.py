@@ -106,6 +106,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button id="create-report-btn" class="button" onclick="showCreateModal()">Create New Report</button>
     <div id="reports-container"></div>
 
+    <!-- Allocations modal. Mirrors the live flow: row kebab -> Allocate ->
+         a list plus an Add form whose chartstring fields are the same combobox
+         widget as the expense type (field-customN / __trigger / __input). -->
+    <div id="allocations-modal" style="display:none; position:absolute; top:120px; left:120px;
+         background:white; border:1px solid #c9c9c9; padding:20px; z-index:4000; width:420px;">
+        <h3>Allocations</h3>
+        <div id="allocations-list"></div>
+        <button type="button" data-nuiexp="allocations-addBtn" onclick="showAddAllocation()">Add</button>
+        <div id="add-allocation-form" style="display:none; margin-top:12px;">
+            <div id="alloc-field-custom6"></div>
+            <div id="alloc-field-custom7"></div>
+            <div id="alloc-field-custom8"></div>
+            <button type="button" data-nuiexp="Ct-add-btn" onclick="saveAddAllocation()">Save</button>
+        </div>
+        <div style="margin-top:12px;">
+            <button type="button" data-nuiexp="allocation-modal-save"
+                    onclick="saveAllocations()">Save</button>
+            <button type="button" onclick="closeAllocations()">Cancel</button>
+        </div>
+        <div id="alloc-popup" class="sapcnqr-overlay__dialog" style="display:none; background:white;
+             border:1px solid #c9c9c9; padding:6px; z-index:5000;">
+            <input type="text" id="alloc-search" style="width:100%;"
+                   placeholder="Search" oninput="renderAllocOptions(this.value)">
+            <div class="sapcnqr-selection-list__list-box" role="listbox" id="alloc-listbox"></div>
+        </div>
+    </div>
+
     <!-- Report Details Panel -->
     <div id="report-details-panel">
         <h2 id="detail-header-title">Report Detail</h2>
@@ -371,6 +398,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             ${t.receipt ? `<span style="color: blue;" class="receipt-attached-name">Attached: ${t.receipt}</span>` : ''}
                         </div>
                         ${receiptControl}
+                        <div class="row-actions-wrap">
+                            <button type="button" class="row-actions-trigger"
+                                    data-nui-widgets="menu-button-trigger" aria-label="Actions"
+                                    onclick="event.stopPropagation(); toggleRowMenu(${idx});">&#8942;</button>
+                            <div class="row-actions-menu" id="row-menu-${idx}" role="menu" style="display:none;">
+                                <div role="menuitem" tabindex="0"
+                                     onclick="event.stopPropagation(); openAllocations(${idx});">Allocate</div>
+                            </div>
+                        </div>
                     `;
                     list.appendChild(row);
                 });
@@ -447,6 +483,127 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             pane.style.display = 'block';
             receiptTab = 'CARD';
             hydrateReceiptArea();
+        }
+
+        // ---- Allocations ----------------------------------------------------
+        // Chartstring fields use the same combobox widget as the expense type,
+        // so production drives them with the same verified writer. The values
+        // below are the real-world shape: a numeric department and a fund code.
+        const ALLOC_OPTIONS = {
+            custom6: [["(25605) ORF-Technical Support", ""], ["(25601) ORF-Administration", ""]],
+            custom7: [["(A0001) General Fund", ""], ["(B0002) Sponsored Research", ""]],
+            custom8: [["(P999) Research", ""], ["(P100) Teaching", ""]]
+        };
+        let allocIdx = -1, allocDraft = {}, allocActiveField = null;
+
+        function toggleRowMenu(idx) {
+            const m = document.getElementById(`row-menu-${idx}`);
+            if (m) m.style.display = m.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function openAllocations(idx) {
+            allocIdx = idx;
+            allocDraft = {};
+            toggleRowMenu(idx);
+            document.getElementById('add-allocation-form').style.display = 'none';
+            document.getElementById('allocations-modal').style.display = 'block';
+            renderAllocationsList();
+        }
+
+        function closeAllocations() {
+            document.getElementById('allocations-modal').style.display = 'none';
+            document.getElementById('alloc-popup').style.display = 'none';
+        }
+
+        function currentAllocations() {
+            const r = reportsData.find(x => x.name === selectedReportName);
+            const t = r && (r.transactions || [])[allocIdx];
+            return (t && t.allocations) || [];
+        }
+
+        function renderAllocationsList() {
+            const list = document.getElementById('allocations-list');
+            const rows = currentAllocations();
+            list.innerHTML = rows.length
+                ? rows.map(a => `<div class="sapMLIB">${a.custom6 || ''} ${a.custom7 || ''} ${a.custom8 || ''}</div>`).join('')
+                : '<div>No allocations found</div>';
+        }
+
+        function showAddAllocation() {
+            document.getElementById('add-allocation-form').style.display = 'block';
+            ['custom6', 'custom7', 'custom8'].forEach(renderAllocField);
+        }
+
+        function renderAllocField(key) {
+            const host = document.getElementById(`alloc-field-${key}`);
+            if (!host) return;
+            const label = {custom6: 'Department', custom7: 'Fund', custom8: 'Program'}[key];
+            const val = allocDraft[key] || '';
+            host.innerHTML = `
+                <div data-nuiexp="field-${key}">
+                    <span class="sapcnqr-form-field__label">${label}</span>
+                    <div role="combobox" tabindex="0" aria-expanded="false"
+                         data-nuiexp="field-${key}__trigger"
+                         style="border:1px solid #c9c9c9; padding:4px; cursor:pointer;"
+                         onclick="openAllocPicker('${key}')">${val}</div>
+                </div>`;
+        }
+
+        function openAllocPicker(key) {
+            allocActiveField = key;
+            const popup = document.getElementById('alloc-popup');
+            const search = document.getElementById('alloc-search');
+            // The search box only exists once the picker is open, and production
+            // looks it up by the field it belongs to.
+            search.setAttribute('data-nuiexp', `field-${key}__input`);
+            search.value = '';
+            popup.style.display = 'block';
+            const trig = document.querySelector(`[data-nuiexp='field-${key}__trigger']`);
+            if (trig) trig.setAttribute('aria-expanded', 'true');
+            renderAllocOptions('');
+        }
+
+        function renderAllocOptions(filter) {
+            const box = document.getElementById('alloc-listbox');
+            const q = (filter || '').toLowerCase();
+            const opts = ALLOC_OPTIONS[allocActiveField] || [];
+            box.innerHTML = opts
+                .filter(([code]) => !q || code.toLowerCase().includes(q))
+                .map(([code, desc]) => `<div role="option" aria-selected="false"
+                        style="padding:4px; cursor:pointer;"
+                        onclick="pickAllocOption('${code}')">${code}${desc}</div>`)
+                .join('') || '<div class="no-match">No matches</div>';
+        }
+
+        function pickAllocOption(code) {
+            allocDraft[allocActiveField] = code;
+            const trig = document.querySelector(`[data-nuiexp='field-${allocActiveField}__trigger']`);
+            if (trig) { trig.textContent = code; trig.setAttribute('aria-expanded', 'false'); }
+            document.getElementById('alloc-popup').style.display = 'none';
+            renderAllocField(allocActiveField);
+        }
+
+        function saveAddAllocation() {
+            if (!allocDraft.custom6 && !allocDraft.custom7) return;
+            const r = reportsData.find(x => x.name === selectedReportName);
+            const t = r && (r.transactions || [])[allocIdx];
+            if (t) {
+                t.allocations = (t.allocations || []).concat([Object.assign({}, allocDraft)]);
+            }
+            document.getElementById('add-allocation-form').style.display = 'none';
+            allocDraft = {};
+            renderAllocationsList();
+        }
+
+        async function saveAllocations() {
+            await fetch('/api/reports/allocate', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({report_name: selectedReportName, index: allocIdx,
+                                      allocations: currentAllocations()})
+            });
+            const res = await fetch('/api/reports');
+            reportsData = await res.json();
+            closeAllocations();
         }
 
         // ---- Expense type field --------------------------------------------
@@ -1108,6 +1265,21 @@ class MockConcurRequestHandler(BaseHTTPRequestHandler):
                         txs[tx_idx]["allocation_code"] = data.get("allocation_code", "")
                         txs[tx_idx]["reconciled"] = True
             
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
+
+        elif self.path == "/api/reports/allocate":
+            report_name = data.get("report_name")
+            tx_idx = data.get("index")
+            allocations = data.get("allocations") or []
+            for r in REPORTS:
+                if r["name"] == report_name:
+                    txs = r.get("transactions", [])
+                    if 0 <= tx_idx < len(txs):
+                        txs[tx_idx]["allocations"] = allocations
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
