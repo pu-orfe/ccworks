@@ -220,12 +220,9 @@ class ConcurBrowserClient:
     # grid plus the `expense-type-quicktips` help panel -- and none of them are
     # the editor. `.first` therefore typed into a table cell and read a tooltip
     # back. These are exact.
-    EXPENSE_TYPE_FIELD = "[data-nuiexp='field-expenseType']"
-    EXPENSE_TYPE_TRIGGER = "[data-nuiexp='field-expenseType__trigger']"
-    EXPENSE_TYPE_SEARCH = "[data-nuiexp='field-expenseType__input']"
     # Scope options to the picker's own listbox: the receipt Receipt/Card Receipt
     # toggle is also role=option, and a page-wide search matches it too.
-    EXPENSE_TYPE_POPUP = ".sapcnqr-selection-list__list-box"
+    SELECT_POPUP = ".sapcnqr-selection-list__list-box"
     # A native <select> is what the mock renders; Concur renders the combobox.
     NATIVE_TYPE_SELECT = ("select.recon-type, select[data-nuiexp='field-type'], "
                           "select[data-nuiexp='field-expenseType'], select[id*='type']")
@@ -285,84 +282,134 @@ class ConcurBrowserClient:
                 continue
         return False, "Could not find Save button"
 
-    def _read_expense_type(self, ctx):
-        """The expense type currently shown, or None."""
-        native = ctx.locator(self.NATIVE_TYPE_SELECT).first
-        if native.count() > 0:
+    def _read_select_field(self, ctx, field_key, label, native_extra=""):
+        """The value a Concur select/combobox field currently shows, or None.
+
+        `field_key` is the data-nuiexp suffix, e.g. "expenseType" or "custom6".
+        """
+        native = f"select[data-nuiexp='field-{field_key}'], select#{field_key}"
+        if native_extra:
+            native += ", " + native_extra
+        el = ctx.locator(native).first
+        if el.count() > 0:
             try:
-                return (native.input_value() or "").strip() or None
+                return (el.input_value() or "").strip() or None
             except Exception:
                 pass
-        field = ctx.locator(self.EXPENSE_TYPE_FIELD).first
+        field = ctx.locator(f"[data-nuiexp='field-{field_key}']").first
         if field.count() == 0:
             return None
         text = " ".join((field.text_content() or "").split())
-        # The container holds its own label and required marker, e.g.
+        # The container carries its own label and required marker, e.g.
         # "Expense Type*Computer Peripherals (OIT use only)".
-        for lead in ("Expense Type *", "Expense Type*", "Expense Type"):
-            if text.startswith(lead):
+        for lead in (f"{label} *", f"{label}*", label):
+            if lead and text.lower().startswith(lead.lower()):
                 text = text[len(lead):]
                 break
         return text.strip() or None
 
-    def _set_expense_type(self, page, ctx, expense_type):
-        """Set the expense type on the open pane. Returns an error string, or None.
+    def _set_select_field(self, page, ctx, field_key, value, label, native_extra=""):
+        """Set a Concur select/combobox field and confirm it took.
 
-        Concur renders this as a role=combobox with no input of its own; a search
-        box appears only once the picker is open. The previous implementation
-        typed into the field directly and pressed Enter, which in a live report
-        meant typing into a grid cell and then re-activating whatever had focus.
+        Returns an error string, or None. Concur renders these as a role=combobox
+        with no input of its own; the search box exists only while the picker is
+        open, and option labels carry the value followed by its description, so
+        matching is by prefix. Options are scoped to the picker's own listbox
+        because other widgets on the page also use role=option.
         """
-        native = ctx.locator(self.NATIVE_TYPE_SELECT).first
+        native_sel = f"select[data-nuiexp='field-{field_key}'], select#{field_key}"
+        if native_extra:
+            native_sel += ", " + native_extra
+        native = ctx.locator(native_sel).first
         if native.count() > 0:
             try:
-                native.select_option(label=expense_type)
+                native.select_option(label=value)
                 page.wait_for_timeout(500)
             except Exception as e:
-                return f"failed to select expense type {expense_type!r}: {e}"
+                return f"failed to select {label} {value!r}: {e}"
         else:
-            field = ctx.locator(self.EXPENSE_TYPE_FIELD).first
+            field = ctx.locator(f"[data-nuiexp='field-{field_key}']").first
             if field.count() == 0:
-                return f"expense type field not found (wanted {expense_type!r})"
+                return f"{label} field not found (wanted {value!r})"
             try:
-                trigger = page.locator(self.EXPENSE_TYPE_TRIGGER).first
+                trigger = page.locator(f"[data-nuiexp='field-{field_key}__trigger']").first
                 (trigger if trigger.count() > 0 else field).click(force=True)
                 page.wait_for_timeout(900)
 
-                search = page.locator(self.EXPENSE_TYPE_SEARCH).first
+                search = page.locator(f"[data-nuiexp='field-{field_key}__input']").first
                 if search.count() == 0:
-                    return f"expense type picker did not open for {expense_type!r}"
+                    return f"{label} picker did not open for {value!r}"
                 search.click()
-                search.fill(expense_type)
+                search.fill(value)
                 page.wait_for_timeout(1200)
 
-                # Option labels carry the type name followed immediately by its
-                # description ("Computer Peripherals (OIT use only)Accessories
-                # like keyboards..."), so an exact-match regex never matches.
-                options = page.locator(f"{self.EXPENSE_TYPE_POPUP} [role='option']")
-                target = None
+                # Option labels carry the value followed by its description
+                # ("Computer Peripherals (OIT use only)Accessories like..."), so
+                # an anchored exact match never matches. Prefer a prefix match;
+                # fall back to a substring so a bare code like "25605" still
+                # finds "(25605) ORF-Technical Support". Ambiguity is refused
+                # rather than guessed -- this writes to a financial record.
+                options = page.locator(f"{self.SELECT_POPUP} [role='option']")
+                labels = []
                 for i in range(options.count()):
-                    opt = options.nth(i)
-                    label = " ".join((opt.text_content() or "").split())
-                    if label.startswith(expense_type):
-                        target = opt
-                        break
-                if target is None:
+                    labels.append((i, " ".join((options.nth(i).text_content() or "").split())))
+
+                exact = [i for i, t in labels if t.startswith(value)]
+                loose = [i for i, t in labels if value.lower() in t.lower()]
+                # Judge ambiguity on distinct labels: the picker renders each
+                # option more than once, so counting elements reports a single
+                # unambiguous choice as a conflict.
+                distinct = {labels[i][1] for i in loose}
+                if exact:
+                    chosen = exact[0]
+                elif len(distinct) == 1:
+                    chosen = loose[0]
+                elif len(distinct) > 1:
                     page.keyboard.press("Escape")
-                    return (f"expense type {expense_type!r} was not offered by the "
-                            f"picker")
+                    matched = ", ".join(repr(t) for t in sorted(distinct)[:4])
+                    return (f"{label} {value!r} is ambiguous -- it matches "
+                            f"{len(distinct)} options ({matched})")
+                else:
+                    page.keyboard.press("Escape")
+                    return f"{label} {value!r} was not offered by the picker"
+                target = options.nth(chosen)
                 target.click(force=True)
                 page.wait_for_timeout(1500)
             except Exception as e:
-                return f"failed to set expense type {expense_type!r}: {e}"
+                return f"failed to set {label} {value!r}: {e}"
 
-        # Read back. Without this a write that silently did nothing -- or landed
-        # on the wrong element entirely -- is indistinguishable from success.
-        got = self._read_expense_type(ctx)
-        if not got or expense_type.lower() not in got.lower():
-            return (f"expense type did not take: wanted {expense_type!r}, "
-                    f"field shows {got!r}")
+        got = self._read_select_field(ctx, field_key, label, native_extra)
+        if not got or value.lower() not in got.lower():
+            return f"{label} did not take: wanted {value!r}, field shows {got!r}"
         return None
+
+
+    def _read_expense_type(self, ctx):
+        """The expense type currently shown, or None."""
+        return self._read_select_field(ctx, "expenseType", "Expense Type",
+                                       self.NATIVE_TYPE_SELECT)
+
+    def _set_expense_type(self, page, ctx, expense_type):
+        """Set the expense type on the open pane. Returns an error string, or None."""
+        return self._set_select_field(page, ctx, "expenseType", expense_type,
+                                      "Expense Type", self.NATIVE_TYPE_SELECT)
+
+    def _read_text_field(self, ctx, selectors):
+        """Value of a text field, or "" if absent.
+
+        Uses the same exact selectors as the writer. The read paths used their own
+        `[data-nuiexp*='...']` wildcards, which are page-wide and resolve in DOM
+        order, so they could return an unrelated widget's text instead of the
+        field -- the comment read returned empty for a comment that was set.
+        """
+        field = ctx.locator(selectors).filter(visible=True).first
+        if field.count() == 0:
+            return ""
+        try:
+            val = field.input_value()
+        except Exception:
+            val = field.text_content() or ""
+        return " ".join((val or "").split()).strip()
 
     def _fill_text_field(self, ctx, selectors, value, label):
         """Set one text field, replacing its contents. Returns an error, or None."""
@@ -374,6 +421,15 @@ class ConcurBrowserClient:
             field.fill(value)
         except Exception as e:
             return f"failed to set {label}: {e}"
+
+        # Read back, like every other write. Without it a field that silently
+        # refused the value still reported success.
+        try:
+            got = (field.input_value() or "").strip()
+        except Exception:
+            return None  # not an input; nothing reliable to compare against
+        if got != value.strip():
+            return f"{label} did not take: wanted {value!r}, field shows {got!r}"
         return None
 
     def _write_expense_fields(self, page, ctx, expense_type=None, purpose=None, comment=None):
@@ -1536,39 +1592,8 @@ class ConcurBrowserClient:
                 # Navigate to report
                 self._open_report_by_name(page, report_name)
                 
-                # Find target row
-                valid_rows = self._get_transaction_rows(page)
-                if transaction_index < 0 or transaction_index >= len(valid_rows):
-                    raise IndexError(f"Transaction index {transaction_index} out of bounds (found {len(valid_rows)} rows).")
-                
-                row = valid_rows[transaction_index]
-                
-                # Click Actions button
-                actions_btn = row.locator("[data-nui-widgets='menu-button-trigger'], .entries-list-actions-button, [aria-label='Actions']").first
-                if actions_btn.count() == 0:
-                    raise RuntimeError("Could not find 'Actions' button for transaction.")
-                
-                actions_btn.click(force=True)
-                page.wait_for_timeout(1000)
-                
-                # Click Allocate
-                allocate_item = page.locator(".menu-item:has-text('Allocate'), .sapMMenuItemText:has-text('Allocate'), [role='menuitem']:has-text('Allocate')").first
-                if allocate_item.count() == 0:
-                    raise RuntimeError("Could not find 'Allocate' menu item.")
-                
-                allocate_item.click()
-                page.wait_for_timeout(2000)
-                
-                # Read allocations from modal
-                allocations = []
-                alloc_list_container = page.locator("#allocations-list, .sapMListUl").filter(visible=True).first
-                if alloc_list_container.count() > 0:
-                    alloc_rows = alloc_list_container.locator("div, .sapMLIB").all()
-                    for r in alloc_rows:
-                        text = r.text_content() or ""
-                        if text.strip() and "No allocations found" not in text:
-                            allocations.append({"raw_text": text.strip()})
-                
+                self._open_allocations_modal(page, report_name, transaction_index)
+                allocations = self._read_allocations_from_modal(page)
                 return {"success": True, "allocations": allocations}
 
             except Exception as e:
@@ -1577,6 +1602,87 @@ class ConcurBrowserClient:
                 return {"success": False, "error": str(e)}
             finally:
                 browser.close()
+
+    def _open_allocations_modal(self, page, report_name, transaction_index):
+        """Open the Allocations modal for a 0-based transaction index.
+
+        Shared by the read and write paths so they cannot drift apart.
+        """
+        valid_rows = self._get_transaction_rows(page)
+        if transaction_index < 0 or transaction_index >= len(valid_rows):
+            raise IndexError(f"Transaction index {transaction_index} out of bounds "
+                             f"(found {len(valid_rows)} rows).")
+        row = valid_rows[transaction_index]
+
+        actions_btn = row.locator("[data-nui-widgets='menu-button-trigger'], "
+                                  ".entries-list-actions-button, "
+                                  "[aria-label='Actions']").first
+        if actions_btn.count() == 0:
+            raise RuntimeError("Could not find 'Actions' button for transaction.")
+        actions_btn.click(force=True)
+        page.wait_for_timeout(1000)
+
+        allocate_item = page.locator(".menu-item:has-text('Allocate'), "
+                                     ".sapMMenuItemText:has-text('Allocate'), "
+                                     "[role='menuitem']:has-text('Allocate')").first
+        if allocate_item.count() == 0:
+            raise RuntimeError("Could not find 'Allocate' menu item.")
+        allocate_item.click()
+        page.wait_for_timeout(2000)
+        return row
+
+    def _read_allocations_from_modal(self, page):
+        """Text of each allocation row in the open modal.
+
+        Deliberately excludes the "Default Allocation" block. That block shows the
+        expense's inherited chartstring, so counting it as an allocation makes an
+        expense that has none look allocated -- and makes a failed write verify
+        against the very code it failed to change.
+        """
+        allocations = []
+        container = page.locator(".allocation-grid-container, #allocations-list, "
+                                 ".sapMListUl").filter(visible=True).first
+        if container.count() == 0:
+            return allocations
+        body = (container.text_content() or "")
+        if "No Allocations" in body or "No allocations found" in body:
+            return allocations
+        for r in container.locator(".allocation-row, .sapMLIB, [role='row']").all():
+            text = " ".join((r.text_content() or "").split())
+            if not text or "Default Allocation" in text:
+                continue
+            allocations.append({"raw_text": text})
+        if not allocations:
+            codes = container.locator(".allocation-code")
+            for i in range(codes.count()):
+                text = " ".join((codes.nth(i).text_content() or "").split())
+                if text:
+                    allocations.append({"raw_text": text})
+        return allocations
+
+    def _verify_allocation(self, page, report_name, transaction_index, values):
+        """Which of `values` are absent from the transaction's allocations.
+
+        Returns a list of missing values; empty means everything is present.
+        Reloads the report first so the check reads persisted state rather than
+        the modal that is still on screen.
+        """
+        try:
+            page.goto(f"{self.base_url}/nui/expense", timeout=30000)
+            self._wait_for_dashboard(page)
+            self._open_report_by_name(page, report_name)
+            self._dismiss_modals(page)
+            self._open_allocations_modal(page, report_name, transaction_index)
+            rows = self._read_allocations_from_modal(page)
+        except Exception as e:
+            logger.warning(f"Could not re-read allocations to verify: {e}")
+            return [v for v in values]
+        for row in rows:
+            text = row["raw_text"].lower()
+            if all(v.lower() in text for v in values):
+                return []
+        blob = " ".join(r["raw_text"] for r in rows).lower()
+        return [v for v in values if v.lower() not in blob] or list(values)
 
     def add_transaction_allocation(
         self, 
@@ -1603,72 +1709,70 @@ class ConcurBrowserClient:
                 # Navigate to report
                 self._open_report_by_name(page, report_name)
                 
-                # Find target row
-                valid_rows = self._get_transaction_rows(page)
-                if transaction_index < 0 or transaction_index >= len(valid_rows):
-                    raise IndexError(f"Transaction index {transaction_index} out of bounds (found {len(valid_rows)} rows).")
-                
-                row = valid_rows[transaction_index]
-                
-                # Click Actions button
-                actions_btn = row.locator("[data-nui-widgets='menu-button-trigger'], .entries-list-actions-button, [aria-label='Actions']").first
-                if actions_btn.count() == 0:
-                    raise RuntimeError("Could not find 'Actions' button for transaction.")
-                
-                actions_btn.click(force=True)
-                page.wait_for_timeout(1000)
-                
-                # Click Allocate
-                allocate_item = page.locator(".menu-item:has-text('Allocate'), .sapMMenuItemText:has-text('Allocate'), [role='menuitem']:has-text('Allocate')").first
-                if allocate_item.count() == 0:
-                    raise RuntimeError("Could not find 'Allocate' menu item.")
-                
-                allocate_item.click()
-                page.wait_for_timeout(2000)
+                self._open_allocations_modal(page, report_name, transaction_index)
                 
                 # Click Add button in Allocations modal
-                add_btn = page.locator("[data-nuiexp='allocations-addBtn'], button:has-text('Add'), .sapMBtn:has-text('Add')").filter(visible=True).first
+                # Exact selector only. A comma-list including button:has-text('Add')
+                # resolves in DOM order and matches the page's "Add Expense"
+                # toolbar button, which the modal overlay then blocks -- the click
+                # times out against an element that was never the target.
+                add_btn = page.locator("[data-nuiexp='allocations-addBtn']").filter(visible=True).first
                 if add_btn.count() == 0:
-                    raise RuntimeError("Could not find 'Add' button in Allocations modal.")
+                    raise RuntimeError("Could not find the Allocations modal 'Add' button "
+                                       "([data-nuiexp='allocations-addBtn']).")
                 
                 add_btn.click()
                 page.wait_for_timeout(2000)
                 
-                # Set Department (custom6)
-                self._set_combobox_value(page, "[data-nuiexp='field-custom6'], #custom6", department)
-                
-                # Set Fund (custom7)
-                self._set_combobox_value(page, "[data-nuiexp='field-custom7'], #custom7", fund)
-                
-                # Set Program (custom8) if provided
+                # Chartstring fields are the same Concur combobox widget as the
+                # expense type, so they go through the same verified writer. The
+                # previous helper typed, pressed Enter blind, and never read the
+                # value back -- an allocation that silently set nothing was
+                # indistinguishable from one that worked.
+                wanted = [("custom6", department, "Department"),
+                          ("custom7", fund, "Fund")]
                 if program:
-                    self._set_combobox_value(page, "[data-nuiexp='field-custom8'], #custom8", program)
-                
+                    wanted.append(("custom8", program, "Program"))
+
+                field_errors = [err for err in
+                                (self._set_select_field(page, page, key, val, label)
+                                 for key, val, label in wanted) if err]
+                if field_errors:
+                    self._take_screenshot(page, "add_allocation_field_error")
+                    return {"success": False, "error": "; ".join(field_errors)}
+
                 self._take_screenshot(page, "add_allocation_filled")
                 
                 # Save Add Allocation modal
-                save_add_btn = page.locator("[data-nuiexp='Ct-add-btn'], button:has-text('Save'), .sapMBtn:has-text('Save')").filter(visible=True).first
+                save_add_btn = page.locator("[data-nuiexp='Ct-add-btn']").filter(visible=True).first
+                if save_add_btn.count() == 0:
+                    save_add_btn = page.locator("button:has-text('Save')").filter(visible=True).last
                 if save_add_btn.count() == 0:
                     raise RuntimeError("Could not find 'Save' button in Add Allocation modal.")
                 save_add_btn.click()
                 page.wait_for_timeout(2000)
                 
-                # Validate the values are set (briefly check the list in allocations modal)
-                verification_text = f"{department}"
-                if page.locator("#allocations-list, .sapMListUl").filter(has_text=re.compile(re.escape(department), re.I)).count() == 0:
-                     logger.warning(f"Could not verify Department '{department}' in allocations list.")
-                
                 # Save Allocations modal
-                save_alloc_btn = page.locator("[data-nuiexp='allocation-modal-save'], button:has-text('Save'), .sapMBtn:has-text('Save')").filter(visible=True).first
+                save_alloc_btn = page.locator("[data-nuiexp='allocation-modal-save']").filter(visible=True).first
                 if save_alloc_btn.count() == 0:
                     # Try a more generic save if nuiexp fails
                     save_alloc_btn = page.locator("button:has-text('Save')").filter(visible=True).last
                 
                 save_alloc_btn.click()
                 page.wait_for_timeout(3000)
-                
                 self._take_screenshot(page, "add_allocation_final")
-                return {"success": True}
+
+                # Confirm it persisted. Re-open the modal from a clean view rather
+                # than trusting the one still on screen: this used to return
+                # success unconditionally, with a single logger.warning that never
+                # reached the caller, so a failed allocation reported as done.
+                missing = self._verify_allocation(page, report_name, transaction_index,
+                                                  [v for _, v, _ in wanted])
+                if missing:
+                    return {"success": False,
+                            "error": ("allocation did not persist; the transaction's "
+                                      f"allocations do not mention {', '.join(missing)}")}
+                return {"success": True, "verified": [v for _, v, _ in wanted]}
 
             except Exception as e:
                 logger.error(f"Failed to add allocation: {str(e)}")
@@ -2365,7 +2469,17 @@ class ConcurBrowserClient:
                         idx = i + 1
                         try:
                             logger.info(f"  Scanning transaction {idx} of {total_to_scan}...")
-                            
+
+                            # Reload the report before every row after the first.
+                            # Cancelling the detail pane does not reliably tear it
+                            # down, so the next row opened onto the previous
+                            # expense's pane and its business purpose, comment and
+                            # type were attributed to the wrong expense.
+                            if i > 0:
+                                page.goto(f"{self.base_url}/nui/expense", timeout=45000)
+                                self._wait_for_dashboard(page)
+                                self._open_report_by_name(page, name)
+
                             # 1. Clear modals and wait for list
                             self._dismiss_modals(page)
                             try:
@@ -2395,8 +2509,13 @@ class ConcurBrowserClient:
                             # 3. Open details (using robust logic with re-identification and fallbacks)
                             selection_successful = False
                             for attempt in range(3):
-                                # Re-identify the row to prevent staleness
-                                rows = page.locator(".detail-row, .sapMListUl .sapMLIB, [class*='expense-item'], [class*='expense-row'], .sapMCustomListItem, [role='row'], [role='listitem'], .sapMTable tr, tr.sapMLIB").all()
+                                # Re-identify through the same helper as everything
+                                # else. This used its own hardcoded selector list,
+                                # which omitted the current grid class and did none
+                                # of the header/placeholder filtering -- so `i`
+                                # indexed a different list here than it did above,
+                                # and every row opened its predecessor's pane.
+                                rows, _ = self._collect_expense_rows(page, name, report_num)
                                 if i >= len(rows): break
                                 current_row = rows[i]
                                 
@@ -2443,14 +2562,43 @@ class ConcurBrowserClient:
                             self._dismiss_modals(page)
                             page.wait_for_timeout(1000)
                             self._take_screenshot(page, f"get_report_details_opened")
-                            
+
+                            # Confirm the open pane really belongs to this row
+                            # before reading anything out of it. Closing a pane
+                            # does not always tear it down, so the previous
+                            # expense's pane can still be on screen -- which
+                            # attributed one expense's business purpose, comment
+                            # and type to the next one, silently and plausibly.
+                            pane_vendor = ""
+                            try:
+                                v_field = page.locator(
+                                    "[data-nuiexp='field-vendorName'], input#vendorName").first
+                                if v_field.count() > 0:
+                                    pane_vendor = (v_field.input_value() or "").strip()
+                            except Exception:
+                                pane_vendor = ""
+                            row_vendor = (expenses[i].get("vendor") or "").strip()
+                            if pane_vendor and row_vendor:
+                                a = pane_vendor.split()[0].rstrip("*").lower()
+                                b = row_vendor.split()[0].rstrip("*").lower()
+                                if a != b:
+                                    logger.warning(
+                                        f"  Detail pane shows {pane_vendor!r} while scanning "
+                                        f"{row_vendor!r}; refusing to attribute its fields.")
+                                    deep_failures.append({
+                                        "index": i + 1,
+                                        "vendor": expenses[i].get("vendor"),
+                                        "amount": expenses[i].get("amount"),
+                                        "reason": (f"detail pane belonged to {pane_vendor!r}, "
+                                                   f"not this expense; shallow fields only"),
+                                    })
+                                    continue
+
                             # 5. Extract fields (using precise Fiori selectors)
                             # Business Purpose
                             try:
-                                p_field = page.locator("[data-nuiexp='field-businessPurpose'], [data-nuiexp*='businessPurpose']").first
-                                if p_field.count() > 0:
-                                    val = p_field.input_value() or p_field.text_content() or ""
-                                    expenses[i]["business_purpose"] = " ".join(val.split()).strip()
+                                expenses[i]["business_purpose"] = self._read_text_field(
+                                    page, self.PURPOSE_FIELD_SELECTORS)
                             except: pass
                             
                             # Expense Type. Shares one reader with the write paths:
@@ -2466,12 +2614,9 @@ class ConcurBrowserClient:
                             
                             # Comment
                             try:
-                                c_field = page.locator("[data-nuiexp='field-comment'], [data-nuiexp*='comment']").first
-                                if c_field.count() > 0:
-                                    val = c_field.input_value() or c_field.text_content() or ""
-                                    val = " ".join(val.split()).strip()
-                                    if val.lower() not in ["", "comment", "comments", "show comments"]:
-                                        expenses[i]["comment"] = val
+                                val = self._read_text_field(page, self.COMMENT_FIELD_SELECTORS)
+                                if val.lower() not in ("", "comment", "comments", "show comments"):
+                                    expenses[i]["comment"] = val
                             except: pass
                             
                             # 6. Back to list
@@ -2853,7 +2998,16 @@ class ConcurBrowserClient:
                         exp_type = type_match.group(1).strip() if type_match else "Unknown"
                         
                         allocations.append({
-                            "index": idx + 1,
+                            # NOT the shared row index. This is derived from the
+                            # position of date matches in the printed report, so
+                            # any date that is not an expense row shifts it -- it
+                            # read one higher than `report show` for every row.
+                            # Named distinctly so it cannot be passed to
+                            # `txn allocate`, which would allocate a different
+                            # expense than the caller was looking at. Correlate on
+                            # date + amount instead.
+                            "section_number": idx + 1,
+                            "index": None,
                             "date": date,
                             "type": exp_type,
                             "amount": amount,
@@ -3676,47 +3830,6 @@ class ConcurBrowserClient:
         """
         rows, _ = self._collect_expense_rows(page)
         return rows
-
-    def _set_combobox_value(self, page: Any, container_selector: str, value: str, clear: bool = True) -> None:
-        """Helper to handle Concur's searchable combobox fields (Searchable Selects)."""
-        logger.info(f"Setting combobox {container_selector} to '{value}'")
-        container = page.locator(container_selector).filter(visible=True).first
-        if container.count() == 0:
-            raise RuntimeError(f"Combobox container {container_selector} not found or not visible.")
-        
-        # Click to focus
-        container.click(force=True)
-        page.wait_for_timeout(500)
-        
-        if clear:
-            # Try clear button first
-            field_nuiexp = container.get_attribute("data-nuiexp") or ""
-            clear_selector = f"[data-nuiexp='{field_nuiexp}__clear']"
-            clear_btn = page.locator(clear_selector).first
-            if clear_btn.count() > 0 and clear_btn.is_visible():
-                clear_btn.click()
-                page.wait_for_timeout(500)
-            else:
-                # Manual clear
-                page.keyboard.press("Control+A")
-                page.keyboard.press("Backspace")
-        
-        # Type the value
-        page.keyboard.type(value, delay=50)
-        page.wait_for_timeout(2000) # Wait for suggestions
-        
-        # Try to find matching item in suggestion list
-        list_item = page.locator(".sapMStandardListItem, .sapMLIB, [role='listitem'], .sapMComboBoxBaseItem, .suggestion-item, .sapMSelectListItem, .sapMListUl li").filter(has_text=re.compile(f"{re.escape(value)}", re.I)).first
-        
-        if list_item.count() > 0 and list_item.is_visible():
-            list_item.click(force=True)
-            logger.info(f"Selected '{value}' from suggestion list.")
-        else:
-            logger.warning(f"Could not find '{value}' in suggestion list. Pressing Enter.")
-            page.keyboard.press("Enter")
-        
-        page.wait_for_timeout(1000)
-        page.keyboard.press("Tab") # Blur
 
     def apply_json_updates(self, report_name: str, expenses: list, headless: bool = True) -> dict:
         """

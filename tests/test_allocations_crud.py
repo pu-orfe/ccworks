@@ -69,20 +69,11 @@ class TestTransactionAllocations(unittest.TestCase):
         except Exception:
             pass
 
-    # The mock server has no allocation UI: the client drives a per-row
-    # [aria-label='Actions'] kebab -> an 'Allocate' menu item -> an allocations
-    # modal -> an 'Add' modal with #custom6/7/8 searchable comboboxes -> two
-    # nested Save buttons. The mock only has an `allocation_code` text input on
-    # its reconcile form, so these two cannot run here yet. They are skipped
-    # loudly rather than deleted: `txn allocate` writes chartstrings to
-    # financial records and currently has no end-to-end coverage at all.
-    NEEDS_MOCK_ALLOCATION_UI = (
-        "mock server lacks the allocation UI (Actions kebab -> Allocate modal -> "
-        "#custom6/7/8 comboboxes); see _get_transaction_rows callers in "
-        "browser_client.get_transaction_allocations"
-    )
-
-    @unittest.skip(NEEDS_MOCK_ALLOCATION_UI)
+    # The mock now models the allocation UI -- per-row Actions kebab, an
+    # 'Allocate' menu item, the allocations modal, and an Add form whose
+    # chartstring fields are the same combobox widget Concur uses for the
+    # expense type. These two ran as skips for as long as `txn allocate` had no
+    # end-to-end coverage at all, while it wrote chartstrings to real records.
     def test_01_initial_allocations_are_empty(self):
         res = self.client.get_transaction_allocations(self.report_name, 0, headless=True)
         self.assertTrue(res["success"], res.get("error"))
@@ -91,7 +82,6 @@ class TestTransactionAllocations(unittest.TestCase):
             f"a freshly created report should have no allocations, got {res['allocations']}",
         )
 
-    @unittest.skip(NEEDS_MOCK_ALLOCATION_UI)
     def test_02_add_then_read_back_the_allocation(self):
         add = self.client.add_transaction_allocation(
             self.report_name, 0, DEPT, FUND, PROG, headless=True
@@ -105,6 +95,38 @@ class TestTransactionAllocations(unittest.TestCase):
             any(DEPT in a["raw_text"] and FUND in a["raw_text"] for a in found),
             f"expected dept+fund in one allocation, got {found}",
         )
+
+    def test_02b_a_chartstring_the_picker_does_not_offer_fails(self):
+        """The point of the exercise: a failed allocation must report failure.
+
+        This path used to end in an unconditional {"success": True}; the one
+        check it had logged a warning that never reached the caller, so an
+        allocation that set nothing was indistinguishable from one that worked.
+        """
+        # These tests share one report and run in name order, so count the rows
+        # before and after rather than asserting the list is empty.
+        before = self.client.get_transaction_allocations(
+            self.report_name, 0, headless=True)["allocations"]
+
+        res = self.client.add_transaction_allocation(
+            self.report_name, 0, "(99999) No Such Department", FUND, None, headless=True
+        )
+        self.assertFalse(res["success"],
+                         f"an unofferable chartstring must fail, got {res}")
+        self.assertIn("Department", res["error"])
+
+        after = self.client.get_transaction_allocations(
+            self.report_name, 0, headless=True)["allocations"]
+        self.assertEqual(len(before), len(after),
+                         "a failed allocation must not leave a partial row behind")
+
+    def test_02c_success_reports_what_it_verified(self):
+        res = self.client.add_transaction_allocation(
+            self.report_name, 0, DEPT, FUND, None, headless=True
+        )
+        self.assertTrue(res["success"], res.get("error"))
+        self.assertIn(DEPT, res.get("verified", []),
+                      "a successful allocation should say what it confirmed")
 
     def test_03_out_of_range_index_is_refused(self):
         """Runs without the allocation UI: the bounds check precedes the kebab click.
