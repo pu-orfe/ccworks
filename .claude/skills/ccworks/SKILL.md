@@ -102,6 +102,11 @@ mean the data is complete. Read it and tell the user what it says:
 Never sum amounts or reconcile from a capture where `complete` is false without
 saying so.
 
+An expense whose type is `Undefined` cannot be saved at all: Concur rejects the
+save with "you must provide valid information for: Expense Type", so a business
+purpose or comment written to that row will not persist until a valid type is
+set. Set the type in the same `apply-json` row and both land together.
+
 `report apply-json` verifies that the row at each index carries the expense's
 amount and vendor, and **refuses** that row otherwise. If you see
 "Row does not match supplied expense", the JSON is stale — re-run `report show`
@@ -134,9 +139,29 @@ when row summaries are insufficient. `--view` is valid only with `--historical`
 
 **txn** — `update NAME IDX... [--type --purpose --comment --justification]`,
 `allocations NAME [--view F]`, `allocate NAME IDX --dept D --fund F [--prog P]`,
-`attach-receipt NAME --merchant M --file PATH`
+`unallocate NAME IDX`, `attach-receipt NAME --merchant M --file PATH`
 
 `--justification` sets business purpose *and* comment to the same text.
+
+`txn allocate` **adds** an allocation; it never replaces one. A second
+allocation splits the expense by percentage (two become 50/50), so allocating an
+already-allocated expense does not supersede the old chartstring — it divides
+the money between them, and both writes report success. To *replace* a
+chartstring, `txn unallocate NAME IDX` first, then allocate. Clearing an
+expense that has none is a reported no-op, not an error.
+
+`txn allocations` lists chartstrings for the whole report from the print view.
+Its `index` is deliberately `null` and its `section_number` is **not** the
+shared row index — correlate on date + amount instead. Its chartstring column
+shows only `dept-fund`; the program segment is written and verified but not
+displayed there, so confirm a program by the `verified` array `txn allocate`
+returns.
+
+Editing any field on an **allocated** expense makes Concur ask "Update Other
+Items?" before it will commit. ccworks answers "Do Not Update", saving the
+expense-level change and leaving the allocations' own text alone. Allocate
+last: doing it before the text edits means every later write pays for that
+dialog.
 
 **card** — `list [--view F]`, `show MERCHANT_OR_ID [--view F]` (default view
 `"All Corporate and Personal Cards"`)
@@ -152,19 +177,6 @@ per-receipt delete)
 **api** — `test` (needs `.env` OAuth creds)
 
 **nuke** — top-level; deletes all drafts and all receipts
-
-## Retired names
-
-The old flat commands were removed. They exit `2` and name their replacement, so
-if you see `unrecognized command`, read the suggestion rather than guessing:
-`query`→`report list`, `query-old`/`list-old-reports`→`report list --historical`,
-`report-details`→`report show`, `create`/`create-report`→`report create`,
-`delete`/`delete-report`→`report delete`, `check-session`→`session status`,
-`login`→`session login`, `add-allocation`→`txn allocate`,
-`list-cards`→`card list`, `card-details`→`card show`, `api-test`→`api test`.
-
-Flags moved too: `--filter-view`→`--view`, `--receipt-path`→`--file`,
-`--reconcile-rules`→`--rules`, `--delegate-perms`→`--can`.
 
 ## Reconcile rules JSON
 

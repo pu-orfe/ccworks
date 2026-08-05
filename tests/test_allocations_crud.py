@@ -128,6 +128,54 @@ class TestTransactionAllocations(unittest.TestCase):
         self.assertIn(DEPT, res.get("verified", []),
                       "a successful allocation should say what it confirmed")
 
+    def test_02d_unallocate_clears_every_allocation(self):
+        """`txn allocate` adds rather than replaces, so replacing a chartstring
+        means clearing first. Two allocations split the expense by percentage,
+        which is not the same as superseding one."""
+        first = self.client.add_transaction_allocation(
+            self.report_name, 1, DEPT, FUND, None, headless=True)
+        self.assertTrue(first["success"], first.get("error"))
+        before = self.client.get_transaction_allocations(
+            self.report_name, 1, headless=True)["allocations"]
+        self.assertEqual(1, len(before),
+                         f"expected exactly one allocation to start, got {before}")
+
+        cleared = self.client.remove_transaction_allocations(
+            self.report_name, 1, headless=True)
+        self.assertTrue(cleared["success"], cleared.get("error"))
+        self.assertEqual(1, cleared["removed"])
+
+        after = self.client.get_transaction_allocations(
+            self.report_name, 1, headless=True)["allocations"]
+        self.assertEqual([], after,
+                         f"the expense should carry no allocations after a clear, got {after}")
+
+    def test_02e_clearing_then_adding_replaces_rather_than_splits(self):
+        """The row-6 case: an expense already allocated to the wrong chartstring
+        ends up on exactly one, not split across two."""
+        self.client.add_transaction_allocation(
+            self.report_name, 1, DEPT, FUND, None, headless=True)
+        self.client.remove_transaction_allocations(self.report_name, 1, headless=True)
+        self.client.add_transaction_allocation(
+            self.report_name, 1, "(25601) ORF-Administration",
+            "(B0002) Sponsored Research", None, headless=True)
+
+        rows = self.client.get_transaction_allocations(
+            self.report_name, 1, headless=True)["allocations"]
+        self.assertEqual(1, len(rows), f"expected a single allocation, got {rows}")
+        self.assertIn("25601", rows[0]["raw_text"])
+        self.assertNotIn("25605", rows[0]["raw_text"],
+                         "the superseded chartstring must be gone, not alongside")
+
+    def test_02f_clearing_an_unallocated_expense_is_a_no_op(self):
+        # Clear whatever the previous cases left, then clear again: the second
+        # call has nothing to do and must say so rather than erroring.
+        self.client.remove_transaction_allocations(self.report_name, 1, headless=True)
+        res = self.client.remove_transaction_allocations(
+            self.report_name, 1, headless=True)
+        self.assertTrue(res["success"], res.get("error"))
+        self.assertEqual(0, res["removed"])
+
     def test_03_out_of_range_index_is_refused(self):
         """Runs without the allocation UI: the bounds check precedes the kebab click.
 

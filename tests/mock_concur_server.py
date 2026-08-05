@@ -112,8 +112,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="allocations-modal" style="display:none; position:absolute; top:120px; left:120px;
          background:white; border:1px solid #c9c9c9; padding:20px; z-index:4000; width:420px;">
         <h3>Allocations</h3>
-        <div id="allocations-list"></div>
+        <!-- .allocation-grid-container and per-row checkboxes mirror the live
+             grid: clearing an allocation means ticking rows and pressing
+             Remove, which is the only way to replace a chartstring since Add
+             splits the expense by percentage instead of superseding it. -->
+        <div class="allocation-grid-container"><div id="allocations-list"></div></div>
         <button type="button" data-nuiexp="allocations-addBtn" onclick="showAddAllocation()">Add</button>
+        <button type="button" data-nuiexp="allocations-removeBtn" onclick="removeCheckedAllocations()">Remove</button>
         <div id="add-allocation-form" style="display:none; margin-top:12px;">
             <div id="alloc-field-custom6"></div>
             <div id="alloc-field-custom7"></div>
@@ -534,9 +539,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         function renderAllocationsList() {
             const list = document.getElementById('allocations-list');
             const rows = currentAllocations();
-            list.innerHTML = rows.length
-                ? rows.map(a => `<div class="sapMLIB">${a.custom6 || ''} ${a.custom7 || ''} ${a.custom8 || ''}</div>`).join('')
-                : '<div>No allocations found</div>';
+            if (!rows.length) {
+                list.innerHTML = '<div>No Allocations</div>';
+                return;
+            }
+            // Header row carries the select-all box and the sort affordances, and
+            // must not be counted as an allocation.
+            const header = '<div role="row" class="alloc-header">'
+                + '<input type="checkbox" id="alloc-select-all" onclick="toggleAllAllocs(this)">'
+                + 'Select all rows DepartmentSort column ascendingCodeSort column ascending</div>';
+            list.innerHTML = header + rows.map((a, i) =>
+                `<div role="row" class="sapMLIB"><input type="checkbox" class="alloc-row-box"
+                     data-i="${i}"> Select row ${a.custom6 || ''} ${a.custom7 || ''} ${a.custom8 || ''}</div>`
+            ).join('');
+        }
+
+        function toggleAllAllocs(box) {
+            document.querySelectorAll('.alloc-row-box').forEach(b => { b.checked = box.checked; });
+        }
+
+        function removeCheckedAllocations() {
+            const keep = [];
+            const rows = currentAllocations();
+            const checked = new Set(
+                Array.from(document.querySelectorAll('.alloc-row-box'))
+                    .filter(b => b.checked).map(b => parseInt(b.dataset.i, 10)));
+            rows.forEach((a, i) => { if (!checked.has(i)) keep.push(a); });
+            const r = reportsData.find(x => x.name === selectedReportName);
+            const t = r && (r.transactions || [])[allocIdx];
+            if (t) t.allocations = keep;
+            renderAllocationsList();
         }
 
         function showAddAllocation() {

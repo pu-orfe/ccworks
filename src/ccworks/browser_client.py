@@ -1,5 +1,6 @@
 import sys
 import os
+from contextlib import contextmanager
 import time
 import logging
 import contextlib
@@ -230,8 +231,6 @@ class ConcurBrowserClient:
                                "input.recon-purpose, input[id*='usinessPurpose']")
     COMMENT_FIELD_SELECTORS = ("[data-nuiexp='field-comment'], textarea#comment, "
                                "textarea.recon-comment, textarea[id*='omment']")
-    SUGGESTION_ITEM_SELECTORS = (".sapMStandardListItem, .sapMLIB, [role='listitem'], "
-                                 "[role='option'], li")
 
     SAVE_BUTTON_SELECTORS = (
         "[data-nuiexp='exp-save-expense']",
@@ -696,7 +695,7 @@ class ConcurBrowserClient:
                         page.wait_for_timeout(1000)
                         if modals.count() == 0:
                             return
-                    except:
+                    except Exception:
                         pass
 
             # 2. Nuclear Option: Remove from DOM if still present
@@ -725,7 +724,7 @@ class ConcurBrowserClient:
                 fcntl.flock(f, fcntl.LOCK_UN)
                 try:
                     os.remove(lock_file)
-                except:
+                except Exception:
                     pass
 
     def _check_session(self, page: Any) -> None:
@@ -739,6 +738,29 @@ class ConcurBrowserClient:
                     "Your SAP Concur session has expired. Please re-run the login command:\n"
                     "  ccworks session login"
                 )
+
+    @contextmanager
+    def _browser_page(self, headless: bool = True, viewport_height: int = 800):
+        """Chromium with the saved session, yielding a page and closing after.
+
+        Twenty-one call sites repeated this launch/new_context/new_page preamble
+        and its `finally: browser.close()`. One definition means session handling
+        (and anything that has to change about it) lives in one place.
+
+        Deliberately not used by run_headed_login, which must start with no
+        stored state and writes the session file itself.
+        """
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            context = browser.new_context(
+                storage_state=self.session_file,
+                viewport={"width": 1280, "height": viewport_height},
+            )
+            page = context.new_page()
+            try:
+                yield page
+            finally:
+                browser.close()
 
     def _wait_for_dashboard(self, page: Any) -> None:
         """Helper to wait for Concur's dynamic SPA dashboard elements to load."""
@@ -870,11 +892,7 @@ class ConcurBrowserClient:
             }
 
         logger.info(f"Checking session validity using session file: {self.session_file}...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 dashboard_url = f"{self.base_url}/nui/expense"
                 page.goto(dashboard_url, timeout=15000)
@@ -899,9 +917,6 @@ class ConcurBrowserClient:
                     "authenticated": False,
                     "reason": f"Network or browser error while checking status: {str(e)}"
                 }
-            finally:
-                browser.close()
-
     def create_draft_report(
         self,
         name: str,
@@ -921,14 +936,7 @@ class ConcurBrowserClient:
 
         logger.info(f"Launching browser (headless={headless}) using session from {self.session_file}...")
         
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(
-                storage_state=self.session_file,
-                viewport={"width": 1280, "height": 800}
-            )
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 dashboard_url = f"{self.base_url}/nui/expense"
                 logger.info(f"Navigating to Concur Expense page: {dashboard_url}")
@@ -1066,20 +1074,13 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "unexpected_browser_error")
                 raise e
-            finally:
-                browser.close()
-
     def list_reports(self, filter_view: Optional[str] = None, headless: bool = True) -> List[Dict[str, Any]]:
         """
         [READ] Navigates to the Expense page and retrieves all visible reports.
         Optionally selects a different filter view (e.g. 'Last 90 Days', 'All Reports') first.
         """
         logger.info(f"Listing expense reports via browser (headless={headless}, filter={filter_view})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             reports = []
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
@@ -1189,8 +1190,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 logger.error(f"Error listing reports: {str(e)}")
                 raise e
-            finally:
-                browser.close()
             return reports
 
     def update_report(
@@ -1206,11 +1205,7 @@ class ConcurBrowserClient:
         modifies its headers, and saves it.
         """
         logger.info(f"Updating report '{old_name}' -> '{new_name}' via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -1238,7 +1233,8 @@ class ConcurBrowserClient:
                         if loc.is_visible(timeout=2000):
                             edit_btn = loc
                             break
-                    except: continue
+                    except Exception:
+                        continue
 
                 if edit_btn:
                     edit_btn.click()
@@ -1328,9 +1324,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "update_error")
                 raise e
-            finally:
-                browser.close()
-
     def update_report_transaction(
         self,
         report_name: str,
@@ -1364,11 +1357,7 @@ class ConcurBrowserClient:
 
         indices = [transaction_indices] if isinstance(transaction_indices, int) else transaction_indices
         logger.info(f"Updating transactions at indices {indices} in report '{report_name}' (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -1453,7 +1442,8 @@ class ConcurBrowserClient:
                                     logger.info(f"  [{current_idx}] Detail pane opened directly from row click.")
                                     selection_successful = True
                                     break
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"update_report_transaction: ignoring {exc!r}")
                             
                             # 3. Final verification of 'Edit' button or Detail pane
                             edit_btn_selectors = [
@@ -1476,8 +1466,10 @@ class ConcurBrowserClient:
                                             page.wait_for_selector("[data-nuiexp*='field'], input[id*='type'], .sapMInputBaseInner", timeout=5000)
                                             selection_successful = True
                                             break
-                                        except: pass
-                                    except: pass
+                                        except Exception as exc:
+                                            logger.debug(f"update_report_transaction: ignoring {exc!r}")
+                                    except Exception as exc:
+                                        logger.debug(f"update_report_transaction: ignoring {exc!r}")
                             
                             if selection_successful:
                                 break
@@ -1495,8 +1487,10 @@ class ConcurBrowserClient:
                                             page.wait_for_selector("[data-nuiexp*='field']", timeout=5000)
                                             selection_successful = True
                                             break
-                                        except: pass
-                            except: pass
+                                        except Exception as exc:
+                                            logger.debug(f"update_report_transaction: ignoring {exc!r}")
+                            except Exception as exc:
+                                logger.debug(f"update_report_transaction: ignoring {exc!r}")
 
                             # Fallback: Double click the row
                             logger.info(f"  [{current_idx}] Falling back to double-click on row...")
@@ -1506,8 +1500,10 @@ class ConcurBrowserClient:
                                     page.wait_for_selector("[data-nuiexp*='field'], input[id*='type']", timeout=5000)
                                     selection_successful = True
                                     break
-                                except: pass
-                            except: pass
+                                except Exception as exc:
+                                    logger.debug(f"update_report_transaction: ignoring {exc!r}")
+                            except Exception as exc:
+                                logger.debug(f"update_report_transaction: ignoring {exc!r}")
                                 
                         if not selection_successful:
                             raise Exception(f"Failed to open transaction detail pane for index {current_idx}")
@@ -1569,7 +1565,8 @@ class ConcurBrowserClient:
                                     modal_msg = modal.text_content() or ""
                                     logger.warning(f"  [{current_idx}] Validation warning detected: {modal_msg.strip()[:100]}...")
                                     self._dismiss_modals(page)
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"update_report_transaction: ignoring {exc!r}")
 
                             overall_success = (updates_found == updates_attempted)
                             results.append({
@@ -1585,7 +1582,7 @@ class ConcurBrowserClient:
                                 inp_comment.press("Enter")
                                 logger.info(f"  [{current_idx}] Attempted Enter key on comment field.")
                                 results.append({"index": current_idx, "success": True, "note": "Used Enter key instead of Save button"})
-                            except:
+                            except Exception:
                                 results.append({"index": current_idx, "success": False, "error": "Save button not found and Enter key failed"})
                         
                         page.wait_for_timeout(2000)
@@ -1606,20 +1603,13 @@ class ConcurBrowserClient:
                 logger.error(f"Failed to update report transactions: {str(e)}")
                 self._take_screenshot(page, "update_transaction_error")
                 return {"success": False, "error": str(e)}
-            finally:
-                browser.close()
-
     def get_transaction_allocations(self, report_name: str, transaction_index: int, headless: bool = True) -> Dict[str, Any]:
         """
         Opens the Allocations modal for a transaction and reads the current allocations.
         transaction_index is 0-based.
         """
         logger.info(f"Getting allocations for transaction {transaction_index} in report '{report_name}'...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -1635,9 +1625,6 @@ class ConcurBrowserClient:
                 logger.error(f"Failed to get allocations: {str(e)}")
                 self._take_screenshot(page, "get_allocations_error")
                 return {"success": False, "error": str(e)}
-            finally:
-                browser.close()
-
     def _open_allocations_modal(self, page, report_name, transaction_index):
         """Open the Allocations modal for a 0-based transaction index.
 
@@ -1657,11 +1644,15 @@ class ConcurBrowserClient:
         actions_btn.click(force=True)
         page.wait_for_timeout(1000)
 
+        # Scope to the visible menu. Every row's menu can exist in the DOM, so a
+        # page-wide `.first` resolves to another row's hidden item and the click
+        # waits forever on something that will never be visible.
         allocate_item = page.locator(".menu-item:has-text('Allocate'), "
                                      ".sapMMenuItemText:has-text('Allocate'), "
-                                     "[role='menuitem']:has-text('Allocate')").first
+                                     "[role='menuitem']:has-text('Allocate')"
+                                     ).filter(visible=True).first
         if allocate_item.count() == 0:
-            raise RuntimeError("Could not find 'Allocate' menu item.")
+            raise RuntimeError("Could not find a visible 'Allocate' menu item.")
         allocate_item.click()
         page.wait_for_timeout(2000)
         return row
@@ -1685,6 +1676,11 @@ class ConcurBrowserClient:
         for r in container.locator(".allocation-row, .sapMLIB, [role='row']").all():
             text = " ".join((r.text_content() or "").split())
             if not text or "Default Allocation" in text:
+                continue
+            # Skip the column-header row: it carries the sort affordances and the
+            # select-all checkbox, and counting it as an allocation both inflates
+            # the count and makes a cleared expense look allocated.
+            if "Sort column" in text or text.startswith("Select all rows"):
                 continue
             allocations.append({"raw_text": text})
         if not allocations:
@@ -1719,6 +1715,104 @@ class ConcurBrowserClient:
         blob = " ".join(r["raw_text"] for r in rows).lower()
         return [v for v in values if v.lower() not in blob] or list(values)
 
+    def remove_transaction_allocations(self, report_name: str, transaction_index: int,
+                                       headless: bool = True) -> Dict[str, Any]:
+        """Clear every allocation on a transaction, returning it to the report's
+        default allocation. `transaction_index` is 0-based.
+
+        `txn allocate` adds rather than replaces -- Concur's modal exposes Add,
+        and a second allocation splits the expense by percentage rather than
+        superseding the first. Replacing a chartstring therefore means clearing
+        and re-adding, which is what this provides.
+        """
+        logger.info(f"Clearing allocations on transaction {transaction_index} "
+                    f"in report '{report_name}'...")
+        with self._browser_page(headless=headless, viewport_height=900) as page:
+            try:
+                page.goto(f"{self.base_url}/nui/expense", timeout=30000)
+                self._wait_for_dashboard(page)
+                self._open_report_by_name(page, report_name)
+                self._dismiss_modals(page)
+
+                self._open_allocations_modal(page, report_name, transaction_index)
+                before = self._read_allocations_from_modal(page)
+                if not before:
+                    logger.info("  No allocations to clear.")
+                    return {"success": True, "removed": 0}
+
+                container = page.locator(".allocation-grid-container, #allocations-list, "
+                                         ".sapMListUl").filter(visible=True).first
+                boxes = container.locator("input[type='checkbox']")
+                if boxes.count() == 0:
+                    return {"success": False,
+                            "error": "no row checkboxes found in the allocations grid"}
+                # The first checkbox is the header's select-all; fall back to
+                # ticking each row if it does not take.
+                boxes.nth(0).click(force=True)
+                page.wait_for_timeout(600)
+
+                remove = page.locator("[data-nuiexp='allocations-removeBtn']").filter(
+                    visible=True).first
+                if remove.count() == 0:
+                    return {"success": False,
+                            "error": "Remove button not found in the allocations modal"}
+                if not remove.is_enabled():
+                    for i in range(1, boxes.count()):
+                        boxes.nth(i).click(force=True)
+                    page.wait_for_timeout(600)
+                remove.click(force=True)
+                page.wait_for_timeout(1200)
+
+                confirm = page.locator(
+                    "[role='alertdialog'] button:has-text('Remove'), "
+                    "[role='alertdialog'] button:has-text('Delete'), "
+                    "[role='alertdialog'] button:has-text('Yes'), "
+                    ".sapcnqr-message-dialog button:has-text('Remove'), "
+                    ".sapcnqr-message-dialog button:has-text('Yes')"
+                ).filter(visible=True).first
+                if confirm.count() > 0:
+                    confirm.click()
+                    page.wait_for_timeout(1200)
+
+                save = page.locator("[data-nuiexp='allocation-modal-save']").filter(
+                    visible=True).first
+                if save.count() == 0:
+                    save = page.locator("button:has-text('Save')").filter(visible=True).last
+                if save.count() == 0:
+                    return {"success": False,
+                            "error": "Save button not found in the allocations modal"}
+                save.click(force=True)
+                page.wait_for_timeout(3000)
+                self._dismiss_modals(page)
+
+                # Verify against a fresh view rather than the modal still on
+                # screen: reporting a clear that did not happen would leave the
+                # caller re-adding onto an existing split.
+                remaining = self._verify_allocations_cleared(page, report_name,
+                                                             transaction_index)
+                if remaining:
+                    return {"success": False,
+                            "error": (f"{len(remaining)} allocation(s) still present "
+                                      f"after clearing: {remaining}")}
+                logger.info(f"  Cleared {len(before)} allocation(s).")
+                return {"success": True, "removed": len(before)}
+            except Exception as e:
+                logger.error(f"Failed to clear allocations: {e}")
+                self._take_screenshot(page, "remove_allocations_error")
+                return {"success": False, "error": str(e)}
+    def _verify_allocations_cleared(self, page, report_name, transaction_index):
+        """Allocation rows still on the transaction after a clear; [] means clear."""
+        try:
+            page.goto(f"{self.base_url}/nui/expense", timeout=30000)
+            self._wait_for_dashboard(page)
+            self._open_report_by_name(page, report_name)
+            self._dismiss_modals(page)
+            self._open_allocations_modal(page, report_name, transaction_index)
+            return [a["raw_text"][:80] for a in self._read_allocations_from_modal(page)]
+        except Exception as e:
+            logger.warning(f"Could not re-read allocations to verify the clear: {e}")
+            return ["verification failed: " + str(e)[:80]]
+
     def add_transaction_allocation(
         self, 
         report_name: str, 
@@ -1732,11 +1826,7 @@ class ConcurBrowserClient:
         Adds a new allocation to a transaction.
         """
         logger.info(f"Adding allocation to transaction {transaction_index} in report '{report_name}': Dept={department}, Fund={fund}, Prog={program}...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -1813,19 +1903,12 @@ class ConcurBrowserClient:
                 logger.error(f"Failed to add allocation: {str(e)}")
                 self._take_screenshot(page, "add_allocation_error")
                 return {"success": False, "error": str(e)}
-            finally:
-                browser.close()
-
     def delete_report(self, name: str, headless: bool = True) -> Dict[str, Any]:
         """
         Deletes a report by name.
         """
         logger.info(f"Deleting report '{name}' via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -1939,19 +2022,12 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "delete_error")
                 raise e
-            finally:
-                browser.close()
-
     def list_available_receipts(self, headless: bool = True) -> List[str]:
         """
         [READ RECEIPTS] Navigates to the Expense page and lists names of available receipts.
         """
         logger.info(f"Listing available receipts via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             receipts = []
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
@@ -2007,8 +2083,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 logger.error(f"Error listing receipts: {str(e)}")
                 raise e
-            finally:
-                browser.close()
             return list(set(receipts))
 
     def delete_available_receipt(self, receipt_name: str, headless: bool = True) -> Dict[str, Any]:
@@ -2017,11 +2091,7 @@ class ConcurBrowserClient:
         in the 'Available Receipts' section, opens it, clicks delete, and confirms.
         """
         logger.info(f"Deleting available receipt '{receipt_name}' via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -2095,8 +2165,68 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "delete_receipt_error")
                 raise e
-            finally:
-                browser.close()
+    REPORT_HEADER_BUTTON = ("button[aria-label*='activate to open report header details'], "
+                            "[data-nuiexp='reportMenu.reportDetails']")
+    REPORT_NAME_FIELD = "[data-nuiexp='field-name'], input#name"
+    REPORT_PURPOSE_FIELD = ("[data-nuiexp='field-businessPurpose'], "
+                            "textarea#businessPurpose")
+
+    def _read_report_header(self, page, report_name):
+        """Open the report header pane and read the report's own fields.
+
+        Returns a dict, or None if the pane could not be opened or does not
+        belong to this report. The header's Business Purpose field is
+        `field-businessPurpose` / id `businessPurpose` -- exactly the same
+        identifiers the per-expense field uses -- so the pane's identity is
+        checked against the report name before anything is read out of it.
+        Reading the wrong one would attribute an expense's purpose to the report.
+        """
+        try:
+            btn = page.locator(self.REPORT_HEADER_BUTTON).filter(visible=True).first
+            if btn.count() == 0:
+                logger.debug("Report header button not found; leaving header fields unset.")
+                return None
+            btn.click(force=True)
+            page.wait_for_timeout(2500)
+
+            name_field = page.locator(self.REPORT_NAME_FIELD).filter(visible=True).first
+            if name_field.count() == 0:
+                logger.debug("Report header pane did not render its name field.")
+                return None
+            try:
+                got_name = (name_field.input_value() or "").strip()
+            except Exception:
+                got_name = ""
+            if report_name.strip() and report_name.strip() not in got_name:
+                logger.warning(f"Report header pane shows {got_name!r} while reading "
+                               f"{report_name!r}; not attributing its fields.")
+                return None
+
+            header = {
+                "purpose": self._read_text_field(page, self.REPORT_PURPOSE_FIELD),
+                # No Comment field exists in the header; report-level comments are
+                # a separate thread, so this is empty rather than "Unknown".
+                "comment": "",
+                "report_id": self._read_text_field(page, "[data-nuiexp='field-reportId'], input#reportId"),
+                "approval_status": self._read_text_field(
+                    page, "[data-nuiexp='field-approvalStatus'], input#approvalStatus"),
+                "payment_status": self._read_text_field(
+                    page, "[data-nuiexp='field-paymentStatus'], input#paymentStatus"),
+            }
+            for sel in ("button:has-text('Cancel')", "button:has-text('Close')"):
+                close = page.locator(sel).filter(visible=True).first
+                if close.count() > 0:
+                    close.click(force=True)
+                    page.wait_for_timeout(1200)
+                    break
+            else:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(800)
+            self._dismiss_modals(page)
+            return header
+        except Exception as e:
+            logger.warning(f"Could not read the report header: {e}")
+            return None
 
     def get_report_details(self, name: str, filter_view: Optional[str] = None, deep: bool = False, headless: bool = True) -> Dict[str, Any]:
         """
@@ -2105,11 +2235,7 @@ class ConcurBrowserClient:
         Optionally selects a different filter view (e.g. 'Last 90 Days') first.
         """
         logger.info(f"Getting details for report '{name}' via browser (headless={headless}, filter={filter_view})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -2189,7 +2315,7 @@ class ConcurBrowserClient:
                                 # Try to find the name specifically
                                 first_line = txt.strip().split('\n')[0].strip()
                                 visible_reports.append(first_line)
-                    except:
+                    except Exception:
                         pass
                     
                     err_msg = f"No report named '{name}' found."
@@ -2269,50 +2395,19 @@ class ConcurBrowserClient:
                     except Exception:
                         continue
 
-                # If purpose or comment still unknown, try to open the Report Details/Header pane
-                if purpose == "Unknown" or comment == "Unknown":
-                    try:
-                        # Common buttons to open report metadata
-                        btn_selectors = [
-                            "button:has-text('Report Details')",
-                            "button:has-text('Report Header')",
-                            "[data-nuiexp='report-header-button']",
-                            "#report-details-btn"
-                        ]
-                        for sel in btn_selectors:
-                            btn = page.locator(sel).first
-                            if btn.count() > 0 and btn.is_visible():
-                                btn.click()
-                                page.wait_for_timeout(1000)
-                                
-                                # If it opened a menu instead of a pane, click "Report Header"
-                                menu_item = page.locator(".sapMMenuLi:has-text('Report Header'), .sapMBtn:has-text('Report Header')").first
-                                if menu_item.count() > 0 and menu_item.is_visible():
-                                    menu_item.click()
-                                    page.wait_for_timeout(2000)
-                                break
-                        
-                        # Now look for the fields in the opened pane/dialog
-                        import re
-                        if purpose == "Unknown":
-                            p_loc = page.locator("input[id*='purpose'], [data-nuiexp*='purpose'], .sapMInputBaseInner[id*='purpose']").first
-                            if p_loc.count() > 0:
-                                val = p_loc.input_value() or p_loc.text_content() or "Unknown"
-                                purpose = " ".join(val.split()).strip()
-                        
-                        if comment == "Unknown":
-                            c_loc = page.locator("textarea[id*='comment'], [data-nuiexp*='comment'], .sapMInputBaseInner[id*='comment']").first
-                            if c_loc.count() > 0:
-                                val = c_loc.input_value() or c_loc.text_content() or "Unknown"
-                                comment = " ".join(val.split()).strip()
-                        
-                        # Close the dialog/pane if one opened
-                        close_btn = page.locator("button:has-text('Save'), button:has-text('Cancel'), button:has-text('Close'), [data-nuiexp*='close']").first
-                        if close_btn.count() > 0 and close_btn.is_visible():
-                            close_btn.click()
-                            page.wait_for_timeout(1000)
-                    except Exception as e:
-                        logger.debug(f"Could not open/scrape Report Details pane: {e}")
+                # The report's own Business Purpose lives in the header pane, and
+                # its field is `field-businessPurpose` with id `businessPurpose`
+                # -- byte-identical to the per-expense field. A page-wide wildcard
+                # therefore could not tell them apart, and this scrape returned
+                # "Unknown" for every report. Read it from the header pane, and
+                # verify the pane is this report's before trusting it.
+                header = self._read_report_header(page, name)
+                if header is not None:
+                    purpose = header.get("purpose", "")
+                    # Concur's report header has no Comment field; report-level
+                    # comments are a separate thread. Reporting "Unknown" implied a
+                    # field that does not exist.
+                    comment = header.get("comment", "")
 
                 # Wait for line items to load specifically
                 try:
@@ -2321,7 +2416,7 @@ class ConcurBrowserClient:
                     # Broaden wait selectors
                     page.locator(".sapMLIB, [class*='expense-item'], [class*='expense-row'], [role='row'], [role='listitem'], tr").first.wait_for(state="visible", timeout=10000)
                     logger.info("Line items detected in report details.")
-                except:
+                except Exception:
                     logger.warning("Timed out waiting for line items to appear using standard selectors.")
 
                 # List expenses line items
@@ -2432,7 +2527,7 @@ class ConcurBrowserClient:
                             aria_label = row.get_attribute("aria-label") or ""
                             title_attr = row.get_attribute("title") or ""
                             full_context += f" | ARIA: {aria_label} | TITLE: {title_attr}"
-                        except:
+                        except Exception:
                             pass
 
                         # If still Unknown, try extracting from full context (text + attributes)
@@ -2457,7 +2552,7 @@ class ConcurBrowserClient:
                                         # Only accept it if it contains actual user text
                                         if icon_text and icon_text.strip().lower() not in ["", "comment", "comments", "view comment", "show comments", "add comment"]:
                                             comment_field = icon_text.strip()
-                                except:
+                                except Exception:
                                     pass
                                 if not comment_field:
                                     comment_field = ""
@@ -2470,7 +2565,7 @@ class ConcurBrowserClient:
                                     icon_text = purpose_icon.get_attribute("title") or purpose_icon.get_attribute("aria-label") or ""
                                     if icon_text and "Purpose" not in icon_text:
                                         business_purpose = icon_text.strip()
-                            except:
+                            except Exception:
                                 pass
 
                         # Final object construction
@@ -2571,7 +2666,8 @@ class ConcurBrowserClient:
                                             menu_item = page.locator(".sapMMenuItemText:has-text('Edit'), .sapMMenuItemText:has-text('Open'), [role='menuitem']:has-text('Edit')").first
                                             if menu_item.count() > 0:
                                                 menu_item.click()
-                                    except: pass
+                                    except Exception as exc:
+                                        logger.debug(f"get_report_details: ignoring {exc!r}")
                                     
                                 # 4. Fallback to double click
                                 if page.locator("[data-nuiexp*='field'], input[id*='type']").count() == 0:
@@ -2582,7 +2678,8 @@ class ConcurBrowserClient:
                                     page.wait_for_selector("[data-nuiexp*='field'], input[id*='type']", timeout=3000)
                                     selection_successful = True
                                     break
-                                except: pass
+                                except Exception as exc:
+                                    logger.debug(f"get_report_details: ignoring {exc!r}")
                                 
                             if not selection_successful:
                                 logger.warning(f"  Failed to open detail pane for transaction {i+1}")
@@ -2634,7 +2731,8 @@ class ConcurBrowserClient:
                             try:
                                 expenses[i]["business_purpose"] = self._read_text_field(
                                     page, self.PURPOSE_FIELD_SELECTORS)
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"get_report_details: ignoring {exc!r}")
                             
                             # Expense Type. Shares one reader with the write paths:
                             # this copy searched `[data-nuiexp*='type']`, which in a
@@ -2645,14 +2743,16 @@ class ConcurBrowserClient:
                                 if val:
                                     expenses[i]["expense_type"] = val
                                     expenses[i]["type"] = val
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"get_report_details: ignoring {exc!r}")
                             
                             # Comment
                             try:
                                 val = self._read_text_field(page, self.COMMENT_FIELD_SELECTORS)
                                 if val.lower() not in ("", "comment", "comments", "show comments"):
                                     expenses[i]["comment"] = val
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"get_report_details: ignoring {exc!r}")
                             
                             # 6. Back to list
                             clicked_back = False
@@ -2805,20 +2905,13 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "get_report_details_error")
                 raise e
-            finally:
-                browser.close()
-
     def get_report_allocations(self, report_name: str, filter_view: Optional[str] = None, headless: bool = True) -> Dict[str, Any]:
         """
         Navigates to report details, opens the '*Princeton Detailed Report CBS' print view,
         and parses the detailed text for allocations and chartstrings.
         """
         logger.info(f"Querying detailed allocations for report '{report_name}' via Print/Share menu...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -2897,7 +2990,7 @@ class ConcurBrowserClient:
                     try:
                         all_text = page.locator("body").text_content()
                         print(f"DEBUG: Page Text (first 1000 chars): {all_text[:1000]}", file=sys.stderr)
-                    except:
+                    except Exception:
                         pass
                     raise FileNotFoundError(f"Could not find report '{report_name}'.")
 
@@ -2960,7 +3053,7 @@ class ConcurBrowserClient:
                         with page.expect_popup(timeout=5000) as popup_info:
                             try:
                                 target_item.click(timeout=2000)
-                            except:
+                            except Exception:
                                 page.evaluate("el => el.click()", target_item.element_handle())
                         print_page = popup_info.value
                         print_page.wait_for_load_state("networkidle")
@@ -2976,7 +3069,7 @@ class ConcurBrowserClient:
                         if not page.locator(dialog_selector).is_visible():
                             try:
                                 target_item.click(force=True)
-                            except:
+                            except Exception:
                                 page.evaluate("el => el.click()", target_item.element_handle())
                         
                         # Wait for dialog to appear
@@ -3060,9 +3153,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "allocations_error")
                 raise e
-            finally:
-                browser.close()
-
     def list_card_transactions(self, card_type_filter: str = "All Corporate and Personal Cards", headless: bool = True) -> List[Dict[str, Any]]:
         """
         Navigates to the Expense page, locates the Available Expenses section,
@@ -3070,11 +3160,7 @@ class ConcurBrowserClient:
         and lists available credit card transactions.
         """
         logger.info(f"Listing card transactions with filter '{card_type_filter}' via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             transactions = []
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
@@ -3139,8 +3225,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 logger.error(f"Error listing card transactions: {str(e)}")
                 raise e
-            finally:
-                browser.close()
             return transactions
 
     def get_card_transaction_details(self, merchant_or_id: str, card_type_filter: Optional[str] = None, headless: bool = True) -> Dict[str, Any]:
@@ -3150,11 +3234,7 @@ class ConcurBrowserClient:
         Optionally selects a different card type filter first.
         """
         logger.info(f"Getting details for transaction matching '{merchant_or_id}' via browser (headless={headless}, filter={card_type_filter})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -3272,9 +3352,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "get_transaction_details_error")
                 raise e
-            finally:
-                browser.close()
-
     def add_expense_delegate(self, name_or_email: str, permissions: Optional[List[str]] = None, headless: bool = True) -> Dict[str, Any]:
         """
         Navigates to the Expense Delegates settings page, adds a delegate by name or email,
@@ -3284,11 +3361,7 @@ class ConcurBrowserClient:
         if not permissions:
             permissions = ["prepare"] # Default permission
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 # Direct navigation to the edit delegates page
                 delegates_url = f"{self.base_url}/profile/editdelegates.asp?ObjectType=1"
@@ -3429,20 +3502,13 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "add_delegate_error")
                 raise e
-            finally:
-                browser.close()
-
     def remove_expense_delegate(self, name_or_email: str, headless: bool = True) -> Dict[str, Any]:
         """
         Navigates to the Expense Delegates settings page, locates a delegate by name or email,
         selects them, clicks the Delete button, and saves the settings.
         """
         logger.info(f"Removing delegate '{name_or_email}' via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 delegates_url = f"{self.base_url}/profile/editdelegates.asp?ObjectType=1"
                 logger.info(f"Navigating to Concur Expense Delegates: {delegates_url}")
@@ -3519,9 +3585,6 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "remove_delegate_error")
                 raise e
-            finally:
-                browser.close()
-
     def reconcile_report(self, report_name: str, reconciliation_rules: Dict[str, Dict[str, str]], headless: bool = True, submit: bool = False) -> Dict[str, Any]:
         """
         Automates month-end reconciliation: opens the report details view,
@@ -3530,11 +3593,7 @@ class ConcurBrowserClient:
         saves each row, and optionally submits the entire report when all are reconciled.
         """
         logger.info(f"Starting month-end reconciliation for report '{report_name}' via browser (headless={headless}, submit={submit})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -3555,6 +3614,19 @@ class ConcurBrowserClient:
                 # Iterate through reconciliation rows
                 rows = page.locator(".transaction-recon-row, .detail-row").all()
                 logger.info(f"Discovered {len(rows)} line item(s) to reconcile.")
+
+                # These selectors do not exist in current Concur markup -- only in
+                # the mock -- so against a live report this list comes back empty,
+                # the loop below never runs, and the function used to return
+                # {"success": True} having reconciled nothing. A reconcile that
+                # matched no rows is a failure, not a silent no-op.
+                if not rows:
+                    return {"success": False, "submitted": False,
+                            "error": ("no reconcilable line items found. This path's row "
+                                      "selectors (.transaction-recon-row, .detail-row) do "
+                                      "not match current Concur markup; use "
+                                      "`report apply-json`, which addresses rows by index "
+                                      "through the shared row helper.")}
 
                 for idx, row in enumerate(rows):
                     merchant_elem = row.locator(".recon-merchant, strong").first
@@ -3649,20 +3721,13 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "reconcile_error")
                 raise e
-            finally:
-                browser.close()
-
     def attach_receipt_to_transaction(self, report_name: str, merchant_or_id: str, receipt_file_path: str, headless: bool = True) -> Dict[str, Any]:
         """
         Navigates to the report details view, locates the transaction row matching merchant_or_id,
         and uploads a local receipt file (PDF/image) to match/associate it with the transaction.
         """
         logger.info(f"Attaching receipt '{receipt_file_path}' to transaction matching '{merchant_or_id}' in report '{report_name}'...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -3741,7 +3806,8 @@ class ConcurBrowserClient:
                     for inp in all_inputs[:10]:
                         try:
                             input_details.append(f"{inp.get_attribute('type') or 'text'}:{inp.get_attribute('class') or ''}:{inp.get_attribute('id') or ''}")
-                        except: pass
+                        except Exception as exc:
+                            logger.debug(f"attach_receipt_to_transaction: ignoring {exc!r}")
                     raise RuntimeError(f"Could not find file input for receipt upload in transaction '{merchant_or_id}'. Found inputs: {input_details}")
 
                 input_file.set_input_files(receipt_file_path)
@@ -3754,19 +3820,13 @@ class ConcurBrowserClient:
             except Exception as e:
                 self._take_screenshot(page, "attach_receipt_error")
                 raise e
-            finally:
-                browser.close()
     def submit_report(self, report_name: str, headless: bool = True) -> Dict[str, Any]:
         """
         Locates an expense report by name, opens it, and clicks the 'Submit Report' button.
         Handles the confirmation dialog that typically follows.
         """
         logger.info(f"Submitting report '{report_name}' via browser (headless={headless})...")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=30000)
                 self._wait_for_dashboard(page)
@@ -3824,9 +3884,6 @@ class ConcurBrowserClient:
                 self._take_screenshot(page, "submit_report_error")
                 logger.error(f"Failed to submit report: {str(e)}")
                 raise e
-            finally:
-                browser.close()
-
     # --- Private Helpers ---
 
     def _open_report_by_name(self, page: Any, name: str) -> None:
@@ -3836,7 +3893,7 @@ class ConcurBrowserClient:
         # Wait for content to load
         try:
             page.locator(".report-tile, .report-card, .sapMCard, .sapMLIB, .cnqr-report-card, .no-reports").first.wait_for(state="visible", timeout=5000)
-        except:
+        except Exception:
             pass
 
         card_selectors = [".report-tile", ".report-card", ".sapMCard", ".sapMLIB", ".cnqr-report-card"]
@@ -3873,11 +3930,7 @@ class ConcurBrowserClient:
         """
         logger.info(f"Applying custom JSON updates to report '{report_name}' (headless={headless})...")
         results = []
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
-            context = browser.new_context(storage_state=self.session_file, viewport={"width": 1280, "height": 800})
-            page = context.new_page()
-            
+        with self._browser_page(headless=headless) as page:
             try:
                 page.goto(f"{self.base_url}/nui/expense", timeout=45000)
                 self._wait_for_dashboard(page)
@@ -3980,7 +4033,8 @@ class ConcurBrowserClient:
                         try:
                             row.click(force=True)
                             page.wait_for_timeout(500)
-                        except: pass
+                        except Exception as exc:
+                            logger.debug(f"apply_json_updates: ignoring {exc!r}")
 
                         # Escalate: toolbar Edit -> row kebab -> double click. These
                         # run unconditionally after the row click, because a click
@@ -3992,7 +4046,8 @@ class ConcurBrowserClient:
                             ).filter(visible=True).first
                             if edit_btn.count() > 0 and edit_btn.is_enabled():
                                 edit_btn.click(force=True)
-                        except: pass
+                        except Exception as exc:
+                            logger.debug(f"apply_json_updates: ignoring {exc!r}")
 
                         if page.locator(self.PANE_READY_SELECTOR).count() == 0:
                             try:
@@ -4009,12 +4064,14 @@ class ConcurBrowserClient:
                                     ).first
                                     if menu_item.count() > 0:
                                         menu_item.click()
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"apply_json_updates: ignoring {exc!r}")
 
                         if page.locator(self.PANE_READY_SELECTOR).count() == 0:
                             try:
                                 row.dblclick(force=True)
-                            except: pass
+                            except Exception as exc:
+                                logger.debug(f"apply_json_updates: ignoring {exc!r}")
 
                         # Confirm the pane is actually open before claiming success.
                         # The old code set selection_successful right after clicking
@@ -4027,7 +4084,8 @@ class ConcurBrowserClient:
                             page.wait_for_selector(self.PANE_READY_SELECTOR, timeout=3000)
                             selection_successful = True
                             break
-                        except: pass
+                        except Exception as exc:
+                            logger.debug(f"apply_json_updates: ignoring {exc!r}")
 
                     if not selection_successful:
                         logger.error(f"Failed to open transaction row {idx}")
@@ -4093,6 +4151,3 @@ class ConcurBrowserClient:
             except Exception as e:
                 logger.error(f"Error applying JSON updates: {e}")
                 raise
-            finally:
-                browser.close()
-
