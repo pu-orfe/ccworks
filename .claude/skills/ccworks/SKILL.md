@@ -63,6 +63,14 @@ it before starting a long run rather than discovering the expiry partway
 through — and prefer one `report apply-json` pass over many single-row commands,
 which is one cookie lifecycle instead of N.
 
+Budget roughly **113s per transaction** for a full pass (text + receipt + save
+is ~10s of that; an allocation's clear-and-add, each verified against a fresh
+reload, is ~103s). A 16-row statement is ~30 min with allocations, ~3 min
+without. One full pass fits a session; a teardown plus a re-apply does not.
+`report apply-json` refuses a payload it estimates cannot finish and stops
+cleanly with `remaining_indices` if the session runs short — re-run
+`session login` and apply only those rows. `--ignore-session-budget` overrides.
+
 `session login` always starts from an empty cookie jar, so it shows the Concur
 login screen even when the saved session is healthy. That is not a symptom of a
 broken session; it warns you what it is about to discard and lets you Ctrl-C.
