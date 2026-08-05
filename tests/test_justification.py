@@ -81,7 +81,7 @@ class TestJustificationAndClassification(unittest.TestCase):
         self.client.create_draft_report(name=report_name)
         
         # 2. Update first transaction
-        target_type = "Software"
+        target_type = "Lodging"
         target_purpose = "Software justification"
         target_comment = "Software comment"
         
@@ -145,7 +145,7 @@ class TestJustificationAndClassification(unittest.TestCase):
                     "index": 1,
                     "vendor": "Uber",
                     "amount": "$24.50",
-                    "expense_type": "Software",
+                    "expense_type": "Lodging",
                     "business_purpose": "Bulk purpose",
                     "comment": "Bulk comment",
                     "receipt_file_path": dummy_receipt
