@@ -84,69 +84,6 @@ it passes straight through, so the two forms behave identically.
 Run `ccworks` for the grouped reference, or `ccworks <group> <sub> --help` for a
 command's flags.
 
-### Retired command names
-
-The earlier flat names (and the launcher's separate aliases for them) were
-removed in favour of the single surface. They now exit `2` and name their
-replacement:
-
-```
-$ ccworks query-old
-ccworks: error: unrecognized command 'query-old'
-
-  Did you mean:  ccworks report list --historical
-```
-
-| Retired | Replacement |
-| :--- | :--- |
-| `query` | `report list` |
-| `query-old`, `list-old-reports` | `report list --historical` |
-| `report-details` | `report show` |
-| `create`, `create-report` | `report create` |
-| `create-headed` | `report create --headed` |
-| `update-report` | `report update` |
-| `submit-report` | `report submit` |
-| `delete`, `delete-report` | `report delete` |
-| `delete-all-reports` | `report delete --all-drafts` |
-| `reconcile` | `report reconcile` |
-| `apply-json` | `report apply-json` |
-| `update-transaction` | `txn update` |
-| `allocations` | `txn allocations` |
-| `add-allocation` | `txn allocate` |
-| `attach-receipt` | `txn attach-receipt` |
-| `list-cards` | `card list` |
-| `card-details` | `card show` |
-| `delete-all-receipts` | `receipt delete --all` |
-| `add-delegate` | `delegate add` |
-| `remove-delegate` | `delegate remove` |
-| `login` | `session login` |
-| `check-session` | `session status` |
-| `api-test`, `run-live` | `api test` |
-
-Flags were renamed to match: `--filter-view` is now `--view`,
-`--receipt-path` is `--file`, `--reconcile-rules` is `--rules`, and
-`--delegate-perms` is `--can`.
-
-### Configure credentials
-
-Copy the template `.env.example` file to `.env`, and populate it with your credentials:
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` and fill in the details:
-```env
-CONCUR_CLIENT_ID=your_actual_client_id
-CONCUR_CLIENT_SECRET=your_actual_client_secret
-CONCUR_USER_LOGIN_ID=target_user_email@company.com
-```
-
-`ccworks` searches upward from the directory you invoke it in to find a
-`.env`, so keep one per working folder (e.g. per fiscal-year records folder).
-
----
-
 ## 📂 Command Reference
 
 ### Dev-checkout tasks (`./ccworks` only)
@@ -174,7 +111,8 @@ CONCUR_USER_LOGIN_ID=target_user_email@company.com
 | | `report apply-json PATH` | Apply an edited `report show` JSON back to Concur. |
 | **txn** | `txn update NAME IDX... [--type --purpose --comment --justification]` | Update one or more transactions by 1-based index. |
 | | `txn allocations NAME [--view F]` | List chartstring allocations (Dept, Fund, Program). |
-| | `txn allocate NAME IDX --dept D --fund F [--prog P]` | Add a chartstring to a transaction. |
+| | `txn allocate NAME IDX --dept D --fund F [--prog P]` | Add a chartstring to a transaction. Adds; it does not replace — a second allocation splits the expense by percentage. |
+| | `txn unallocate NAME IDX` | Clear every allocation on a transaction, returning it to the report's default. Use before `txn allocate` to replace a chartstring rather than split it. |
 | | `txn attach-receipt NAME --merchant M --file PATH` | Attach a local receipt file to a transaction row. |
 | **card** | `card list [--view F]` | List credit-card transactions. |
 | | `card show MERCHANT_OR_ID [--view F]` | Details for one card transaction. |
@@ -204,218 +142,105 @@ safe when piping to `jq`.
 
 ---
 
-## 🔍 Detailed Usage Examples
+## 🔍 Monthly reconciliation workflow
 
-### 1. Expense reports
+A statement period is reconciled in the order below. The order matters: each
+step avoids a trap the next one would otherwise hit.
 
-Concur separates active drafts from older submitted/processed reports behind
-dropdown filters. `--historical` switches to the latter, and `--view` picks the
-filter.
+**1. Capture the report and check the capture.**
 
 ```bash
-# Current drafts (and available receipts)
 ccworks report list
-
-# Historical reports, default 'Last 90 Days'
-ccworks report list --historical
-
-# Historical reports under a specific filter
-ccworks report list --historical --view "All Reports"
-
-# Line items for one report; --deep opens each transaction
-ccworks report show "Old Lodging Report 2025" --deep
+ccworks report show "Statement Report 06/16 - 07/31" > report.json
 ```
 
-`--view` applies only with `--historical`; passing it to a draft listing is a
-usage error rather than a silently ignored flag.
+Read `extraction.complete` before trusting anything downstream. `false` means
+rows were skipped or a detail pane never opened, and the reasons are listed in
+`extraction`. Byte-identical line items are **kept** — two shipments the same
+day for the same amount are two expenses, not a duplicate.
 
-```bash
-# Create, retitle, then submit
-ccworks report create --name "Q3 Travel" --purpose "INFORMS 2026"
-ccworks report update "Q3 Travel" --justification "Conference travel"
-ccworks report submit "Q3 Travel"
+Indices are **1-based and dense**, and the same number addresses the same
+expense in `report show`, `txn update`, `txn allocate`, and `report apply-json`.
+They are positional, so re-capture before acting on numbers from an earlier run.
+(`txn allocations` is the exception: it reports `section_number`, not the shared
+index. Correlate on date + amount.)
 
-# Delete one report, or clear every draft
-ccworks report delete "Q3 Travel"
-ccworks report delete --all-drafts
-```
-
-### 2. Credit card transactions
-
-```bash
-ccworks card list
-ccworks card list --view "All Purchasing Cards"
-ccworks card show "Office Depot" --view "All Purchasing Cards"
-```
-
-### 3. Expense delegates
-
-```bash
-ccworks delegate add "John Doe" --can prepare submit
-ccworks delegate add "jane@example.com" --can prepare approve
-ccworks delegate remove "John Doe"
-```
-
-### 4. Month-end reconciliation
-
-`report reconcile` is review-only by default, leaving the report in draft so you
-can inspect it before submitting.
-
-```bash
-# Review-only
-ccworks report reconcile "Reconciliation Report A"
-
-# With explicit rules
-ccworks report reconcile "Reconciliation Report A" --rules my_recon_rules.json
-
-# Reconcile and submit in one step
-ccworks report reconcile "Reconciliation Report A" --rules my_recon_rules.json --submit
-```
-
-Rules are a JSON object keyed by **merchant substring**, matched
-case-insensitively; the first matching key wins, so order the most specific
-first. Transactions matching no rule are skipped with a warning on stderr —
-check those rather than assuming full coverage.
+**2. Attach receipts.** One `apply-json` pass, one browser session:
 
 ```json
-{
-  "United Airlines": {
+{ "report_name": "Statement Report 06/16 - 07/31",
+  "expenses": [
+    { "index": 1, "vendor": "ANTHROPIC* CLAUDE TEAM", "amount": "$500.00",
+      "receipt_file_path": "/path/to/001.pdf" }
+  ] }
+```
+
+`vendor` and `amount` are the identity guard: `apply-json` refuses a row whose
+amount and vendor do not match what you described, rather than writing to a
+different expense. Omit a field to leave it alone; pass `""` to clear it.
+
+**3. Correct expense types where they are wrong.** Usually only a few rows.
+Supply the full option text — a bare prefix that matches more than one option is
+refused rather than guessed. An expense typed `Undefined` cannot be saved at
+all, so set its type in the same row as its text or neither will persist.
+
+**4. Fill Business Purpose and Comment for every transaction.** Batch all of
+them into one `apply-json` payload; `--justification` on `txn update` sets both
+fields to the same text for a single row.
+
+**5. Allocate chartstrings last.**
+
+```bash
+ccworks txn allocate "Statement Report 06/16 - 07/31" 6 \
+    --dept 25604 --fund A0002 --prog FC631
+ccworks txn unallocate "Statement Report 06/16 - 07/31" 6   # clear, to replace
+```
+
+`txn allocate` **adds**; it does not replace. A second allocation splits the
+expense by percentage rather than superseding the first, and both writes report
+success. Clear first with `txn unallocate` to replace a chartstring.
+
+Allocate last because editing any field on an allocated expense makes Concur ask
+"Update Other Items?" before it will commit — ccworks answers it, but every
+later write then pays for the extra round trip.
+
+**6. Verify, then submit.**
+
+```bash
+ccworks report show "Statement Report 06/16 - 07/31" --deep
+ccworks report submit "Statement Report 06/16 - 07/31"
+```
+
+`--deep` opens every transaction, so it is the only way to read business
+purpose, comment and type back — and it is slow. Submission is outward-facing
+and not silently undoable.
+
+### Reconcile rules (optional)
+
+`report reconcile` is review-only unless given `--submit`. Rules are keyed by
+**merchant substring**, matched case-insensitively, first match wins:
+
+```json
+{ "United Airlines": {
     "expense_type": "Airfare",
     "business_purpose": "INFORMS 2026 travel",
-    "comment": "Economy, booked in advance",
     "allocation_code": "(25605) ORF-Technical Support",
-    "receipt_path": "/Users/you/receipts/united.pdf"
-  }
-}
+    "receipt_path": "/Users/you/receipts/united.pdf" } }
 ```
 
-All fields are optional; `receipt` is accepted as an alias for `receipt_path`.
+Unmatched transactions are skipped with a warning on stderr — check those rather
+than assuming full coverage. Merchant matching cannot distinguish rows that
+share a vendor, so prefer `apply-json` with explicit indices where a statement
+repeats a merchant.
 
-### 5. Attach a receipt to a transaction
+### Other commands
 
 ```bash
-ccworks txn attach-receipt "Receipt Upload Report A" \
-    --merchant "Uber" \
-    --file receipts/uber_ride_receipt.pdf
+ccworks card list                       # corporate card transactions
+ccworks card show "Office Depot"
+ccworks delegate add "John Doe" --can prepare submit
+ccworks report delete --all-drafts      # destructive
 ```
-
-### 6. Report and transaction fields (CRUD)
-
-Transaction indices are **1-based**, and `txn update` accepts several at once —
-batch them rather than looping the command, since each invocation drives a
-browser.
-
-```bash
-# Header fields
-ccworks report update "Transaction Report" --justification "Project Alpha research"
-ccworks report update "Old Name" --name "New Name" --purpose "Updated purpose"
-
-# Several transactions at once
-ccworks txn update "Transaction Report" 1 2 3 --type "Software" --justification "Required for project X"
-
-# A single transaction, distinct purpose and comment
-ccworks txn update "Transaction Report" 1 --type "Ground Transportation" \
-    --purpose "Meeting client" --comment "Uber ride"
-
-# Clear a field
-ccworks txn update "Transaction Report" 1 --comment ""
-```
-
-Round-trip a whole report through JSON:
-
-```bash
-ccworks report show "Statement Report 06/16 - 07/31" --deep --output json > report.json
-# edit report.json
-ccworks report apply-json report.json
-```
-
-#### Indices, and what `apply-json` will refuse
-
-`index` is **1-based and dense** — position among the report's expense line
-items, counting every one of them. The same number addresses the same expense in
-`report show`, `txn update`, `txn allocate`, and `report apply-json`.
-
-Before editing a row, `apply-json` checks that the row at that index actually
-carries the amount (and vendor) of the expense you described. On a mismatch it
-**refuses that row** and tells you to re-run `report show`, rather than writing
-to a different expense:
-
-```json
-{ "index": 7, "success": false,
-  "error": "Row does not match supplied expense (expected amount '$45.00' not present in row). Re-run `report show` to get current indices." }
-```
-
-That matters because a positional index is only valid while the report is
-unchanged. Add, delete, or re-sort a line item in Concur after producing the
-JSON and the index still resolves — to the wrong expense.
-
-**An absent field is left alone; an explicit `""` clears it.** Omit
-`business_purpose` and whatever Concur holds is preserved; set it to `""` and it
-is cleared. Before 0.3.3 an omitted field was written as empty, so editing one
-field silently wiped every field you had not mentioned.
-
-**Rows captured incompletely are withheld.** If the JSON's
-`extraction.deep_scan_failures` names a row, its `business_purpose` and
-`comment` are empty because the detail pane never opened — not because Concur
-holds them empty — so writing them back would clear real data. `apply-json`
-skips those rows and says so:
-
-```
-[SKIP] index 1 (APPLE.COM/BILL $2.99): captured incompletely (deep scan failed),
-       so its fields are not safe to write. Re-run `report show --deep` or pass
-       --include-incomplete.
-```
-
-Pass `--include-incomplete` to write them anyway. A row whose pane will not open
-generally cannot be written by ccworks either; set that one in the Concur UI.
-
-**Regenerate JSON captured before 0.3.0.** Earlier versions numbered rows by
-their position among raw HTML matches, so the numbers were sparse and did not
-line up with what the write paths counted.
-
-#### Knowing the capture was complete
-
-`report show` reports what it did *not* return, so `"success": true` no longer
-hides omissions:
-
-```json
-"extraction": {
-  "candidates_seen": 17,
-  "expenses_returned": 15,
-  "skipped_candidates": [
-    { "candidate_position": 0,  "reason": "column header row" },
-    { "candidate_position": 16, "reason": "too short to be an expense row" }
-  ],
-  "identical_line_items": [
-    { "raw_text": "... Shipping & Freight, $23.28 ... ESHIPGLOBAL INC ...", "count": 2 }
-  ],
-  "deep_scan_failures": [],
-  "complete": true
-}
-```
-
-`identical_line_items` flags rows whose text matches exactly. These are **kept**
-— two shipments booked the same day for the same amount are two expenses, and
-earlier versions deduplicated by text and silently dropped the second, which
-understated report totals. Check them against Concur if you did not expect them.
-
-With `--deep`, `deep_scan_failures` lists rows whose detail pane would not open;
-those keep their shallow fields, and `complete` is `false`.
-
-### 7. Transaction allocations (chartstrings)
-
-```bash
-# Read current allocations
-ccworks txn allocations "Project Alpha Report"
-
-# Add a chartstring to transaction 1
-ccworks txn allocate "Project Alpha Report" 1 \
-    --dept "(25605) ORF-Technical Support" \
-    --fund "(A0001) General Fund" \
-    --prog "(P999) Research"
-```
-
----
 
 ## 🤖 Integration with Pi Coding Agent (pi.dev)
 
