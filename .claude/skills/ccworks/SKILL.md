@@ -55,6 +55,17 @@ Do not retry and do not script around it. Ask the user:
 Session state is `$CCWORKS_STATE_DIR/concur_session.json`, defaulting to
 `~/Library/Application Support/ccworks` (macOS) or `$XDG_STATE_HOME/ccworks`
 (Linux). It holds live auth cookies — never print, copy, or commit it.
+
+Concur's JWT lasts about 60 minutes. Every command writes the refreshed cookies
+back on a clean exit, so ordinary use keeps the session alive; a gap longer than
+the JWT's life does not. `session status` reports `expires_in_minutes`, so check
+it before starting a long run rather than discovering the expiry partway
+through — and prefer one `report apply-json` pass over many single-row commands,
+which is one cookie lifecycle instead of N.
+
+`session login` always starts from an empty cookie jar, so it shows the Concur
+login screen even when the saved session is healthy. That is not a symptom of a
+broken session; it warns you what it is about to discard and lets you Ctrl-C.
 `CCWORKS_SKIP_BROWSER_BOOTSTRAP=1` skips the runtime Chromium bootstrap.
 
 ## Confirm before anything outward-facing or destructive

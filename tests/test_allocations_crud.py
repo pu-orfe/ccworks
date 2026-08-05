@@ -176,6 +176,70 @@ class TestTransactionAllocations(unittest.TestCase):
         self.assertTrue(res["success"], res.get("error"))
         self.assertEqual(0, res["removed"])
 
+    def test_02g_apply_json_can_allocate_in_the_same_pass(self):
+        """One-shot reconciliation: text, receipt and allocation in a single call.
+
+        Allocation lives behind the row's kebab rather than the expense pane, so
+        it used to need its own command and its own browser session per row --
+        sixteen sessions for a statement, straddling session expiries.
+        """
+        res = self.client.apply_json_updates(
+            report_name=self.report_name,
+            expenses=[{
+                "index": 1, "vendor": "Uber", "amount": "$24.50",
+                "business_purpose": "one shot", "comment": "one shot",
+                "allocation": {"dept": DEPT, "fund": FUND},
+            }],
+            headless=True)
+        row = res["results"][0]
+        self.assertTrue(row["success"], row)
+        self.assertIn(DEPT, row.get("allocation_verified", []),
+                      "the row should report which chartstring it confirmed")
+
+        rows = self.client.get_transaction_allocations(
+            self.report_name, 0, headless=True)["allocations"]
+        self.assertEqual(1, len(rows), f"expected a single allocation, got {rows}")
+        self.assertIn("25605", rows[0]["raw_text"])
+
+    def test_02h_apply_json_replaces_rather_than_splits(self):
+        """Allocating through apply-json clears first, so a chartstring is
+        superseded rather than split 50/50 with the old one."""
+        self.client.apply_json_updates(
+            report_name=self.report_name,
+            expenses=[{"index": 1, "vendor": "Uber", "amount": "$24.50",
+                       "allocation": {"dept": DEPT, "fund": FUND}}],
+            headless=True)
+        res = self.client.apply_json_updates(
+            report_name=self.report_name,
+            expenses=[{"index": 1, "vendor": "Uber", "amount": "$24.50",
+                       "allocation": {"dept": "(25601) ORF-Administration",
+                                      "fund": "(B0002) Sponsored Research"}}],
+            headless=True)
+        self.assertTrue(res["results"][0]["success"], res["results"][0])
+
+        rows = self.client.get_transaction_allocations(
+            self.report_name, 0, headless=True)["allocations"]
+        self.assertEqual(1, len(rows), f"expected one allocation, got {rows}")
+        self.assertIn("25601", rows[0]["raw_text"])
+        self.assertNotIn("25605", rows[0]["raw_text"])
+
+    def test_02i_empty_allocation_object_clears(self):
+        """Teardown: an empty allocation object clears without adding."""
+        self.client.apply_json_updates(
+            report_name=self.report_name,
+            expenses=[{"index": 1, "vendor": "Uber", "amount": "$24.50",
+                       "allocation": {"dept": DEPT, "fund": FUND}}],
+            headless=True)
+        res = self.client.apply_json_updates(
+            report_name=self.report_name,
+            expenses=[{"index": 1, "vendor": "Uber", "amount": "$24.50",
+                       "allocation": {}}],
+            headless=True)
+        self.assertTrue(res["results"][0]["success"], res["results"][0])
+        rows = self.client.get_transaction_allocations(
+            self.report_name, 0, headless=True)["allocations"]
+        self.assertEqual([], rows, f"allocations should be cleared, got {rows}")
+
     def test_03_out_of_range_index_is_refused(self):
         """Runs without the allocation UI: the bounds check precedes the kebab click.
 
