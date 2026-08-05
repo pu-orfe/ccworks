@@ -485,6 +485,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             hydrateReceiptArea();
         }
 
+        function answerUpdateOther(propagate) {
+            closeSaveDialog();
+            window.__updateAnswered = true;
+            // `propagate` would also rewrite the allocation rows' own text.
+            // ccworks answers "Do Not Update", so that path is left unexercised
+            // rather than faked.
+            const pending = window.__pendingSave || [];
+            if (pending.length === 2) saveReconTransaction(pending[0], pending[1]);
+        }
+
         // ---- Allocations ----------------------------------------------------
         // Chartstring fields use the same combobox widget as the expense type,
         // so production drives them with the same verified writer. The values
@@ -825,11 +835,59 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             document.getElementById('sapcnqr-layout-side-panel-elements').style.display = 'none';
         }
 
+        // Concur's save dialogs. Both blocked a commit while ccworks reported
+        // success: its detector looked for .sapMDialog / [role=dialog], and
+        // Concur renders .sapcnqr-message-dialog with role="alertdialog".
+        function showSaveDialog(html) {
+            const d = document.createElement('div');
+            d.className = 'sapcnqr-dialog sapcnqr-message-dialog';
+            d.setAttribute('role', 'alertdialog');
+            d.id = 'save-dialog';
+            d.style.cssText = 'position:absolute; top:200px; left:200px; background:white;'
+                + ' border:1px solid #c9c9c9; padding:20px; z-index:7000;';
+            d.innerHTML = html;
+            document.body.appendChild(d);
+        }
+
+        function closeSaveDialog() {
+            const d = document.getElementById('save-dialog');
+            if (d) d.remove();
+        }
+
         async function saveReconTransaction(reportName, idx) {
             const expense_type = currentExpenseType(idx);
             const business_purpose = document.getElementById(`businessPurpose`).value;
             const comment = document.getElementById(`recon-comment`).value;
             const allocation_code = document.getElementById(`recon-allocation-${idx}`).value;
+
+            // Expense type is required. A report named ...REQTYPE enforces it, so
+            // the rest of the suite can keep saving rows that have no type.
+            if (!expense_type && reportName.includes('REQTYPE')) {
+                showSaveDialog('<div>Error</div><div>Before you can continue, you must '
+                    + 'provide valid information for:</div><div>Expense Type</div>'
+                    + '<button type="button" onclick="closeSaveDialog()">Close</button>');
+                return;
+            }
+
+            // An expense that carries allocations asks whether to propagate the
+            // change into them. Until answered the save does not commit -- which
+            // is how an edit was silently discarded.
+            const rep = reportsData.find(x => x.name === reportName);
+            const tx = rep && (rep.transactions || [])[idx];
+            const hasAllocs = tx && (tx.allocations || []).length > 0;
+            const purposeChanged = tx && business_purpose !== (tx.business_purpose || '');
+            if (hasAllocs && purposeChanged && !window.__updateAnswered) {
+                showSaveDialog('<div>Update Other Items?</div><div>You changed the '
+                    + 'following fields:</div><div>Business Purpose</div><div>Do you want '
+                    + 'to also update your itemizations and allocations in this expense '
+                    + 'with the same change?</div>'
+                    + '<button type="button" onclick="answerUpdateOther(true)">Update</button>'
+                    + '<button type="button" onclick="answerUpdateOther(false)">Do Not Update</button>'
+                    + '<button type="button" onclick="closeSaveDialog()">Cancel</button>');
+                window.__pendingSave = [reportName, idx];
+                return;
+            }
+            window.__updateAnswered = false;
             
             await fetch('/api/reports/reconcile_transaction', {
                 method: 'POST',

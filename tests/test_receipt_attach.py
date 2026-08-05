@@ -271,7 +271,7 @@ class TestFieldEditsStillWork(ReceiptAttachTestCase):
     def test_fields_and_receipt_apply_together(self):
         res = self.apply(self.REPORT, [{
             "index": self.ROW_DUP_A, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
-            "expense_type": "Software", "business_purpose": "Lab shipping",
+            "expense_type": "Lodging", "business_purpose": "Lab shipping",
             "comment": "Q3 restock", "receipt_file_path": self.pdf("both.pdf"),
         }])
         self.assertTrue(res["results"][0]["success"], res["results"][0])
@@ -280,7 +280,7 @@ class TestFieldEditsStillWork(ReceiptAttachTestCase):
         self.assertEqual("Lab shipping", row.get("business_purpose"),
                          "the field write must survive the receipt upload")
         self.assertEqual("Q3 restock", row.get("comment"))
-        self.assertEqual("Software", row.get("expense_type"))
+        self.assertEqual("Lodging", row.get("expense_type"))
         self.assertEqual("both.pdf", row.get("receipt"))
 
     def test_expense_type_via_native_select(self):
@@ -298,6 +298,22 @@ class TestFieldEditsStillWork(ReceiptAttachTestCase):
         }])
         self.assertTrue(res["results"][0]["success"], res["results"][0])
         self.assertEqual("Lodging", self.fields(report)[1].get("expense_type"))
+
+    def test_an_ambiguous_expense_type_is_refused_not_guessed(self):
+        """"Software" prefixes both "Software" and "Software Maintenance".
+
+        Picking the first match would silently write a type nobody asked for, on
+        a financial record. The write is refused and the row fails instead.
+        """
+        res = self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_C, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "expense_type": "Software",
+        }])
+        row = res["results"][0]
+        self.assertFalse(row["success"], f"an ambiguous type must be refused, got {row}")
+        self.assertIn("ambiguous", row["error"])
+        self.assertIsNone(self.fields(self.REPORT)[self.ROW_DUP_C].get("expense_type") or None,
+                          "nothing should have been written")
 
     def test_a_field_that_does_not_take_fails_the_row(self):
         """An expense type the pane will not accept must fail, not report success."""
@@ -322,12 +338,12 @@ class TestFieldEditsStillWork(ReceiptAttachTestCase):
         """
         self.apply(self.REPORT, [{
             "index": self.ROW_DUP_B, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
-            "expense_type": "Software", "business_purpose": "type check",
+            "expense_type": "Lodging", "business_purpose": "type check",
         }])
         row = self.fields(self.REPORT)[self.ROW_DUP_B]
         self.assertEqual("type check", row.get("business_purpose"),
                          "control: the other field does land")
-        self.assertEqual("Software", row.get("expense_type"))
+        self.assertEqual("Lodging", row.get("expense_type"))
 
 
 if __name__ == "__main__":

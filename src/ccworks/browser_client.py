@@ -264,17 +264,43 @@ class ConcurBrowserClient:
                 btn.click(force=True)
                 page.wait_for_timeout(2500)
 
-                modal = page.locator(".sapMDialog, .sapMMessageBox, [role='dialog']").filter(
-                    has_text=re.compile(r"Error|provide valid information", re.I)).first
-                if modal.count() > 0 and modal.is_visible(timeout=2000):
-                    msg = (modal.text_content() or "").strip()[:150]
-                    close = modal.locator(
-                        "button:has-text('Close'), button:has-text('OK')").first
-                    if close.count() > 0:
-                        close.click()
-                    else:
-                        page.keyboard.press("Escape")
-                    return False, f"save rejected by Concur: {msg}"
+                # Concur's dialogs are .sapcnqr-message-dialog with
+                # role="alertdialog". The old locator looked for .sapMDialog /
+                # [role='dialog'], matched neither, and so reported a save that
+                # Concur had refused as a successful one.
+                dialog = page.locator(
+                    ".sapcnqr-message-dialog, .sapcnqr-dialog, [role='alertdialog'], "
+                    ".sapMDialog, .sapMMessageBox, [role='dialog']"
+                ).filter(visible=True).first
+                if dialog.count() > 0:
+                    text = " ".join((dialog.text_content() or "").split())
+
+                    # "Update Other Items?" asks whether to propagate the change
+                    # into this expense's itemizations and allocations. Until it
+                    # is answered the save does not commit, so leaving it on
+                    # screen silently discarded the edit. "Do Not Update" saves
+                    # the expense-level change and leaves allocations' own text
+                    # alone, which is the narrower of the two.
+                    if "Update Other Items" in text:
+                        choice = dialog.locator(
+                            "button:has-text('Do Not Update')").filter(visible=True).first
+                        if choice.count() == 0:
+                            return False, ("save raised 'Update Other Items?' but no "
+                                           "'Do Not Update' button was found")
+                        choice.click()
+                        page.wait_for_timeout(2500)
+                        logger.info(f"  Saved via {sel} (declined itemization update)")
+                        return True, None
+
+                    if re.search(r"Error|provide valid information|must provide", text, re.I):
+                        msg = text[:180]
+                        close = dialog.locator(
+                            "button:has-text('Close'), button:has-text('OK')").first
+                        if close.count() > 0:
+                            close.click()
+                        else:
+                            page.keyboard.press("Escape")
+                        return False, f"save rejected by Concur: {msg}"
 
                 logger.info(f"  Saved via {sel}")
                 return True, None
@@ -360,6 +386,15 @@ class ConcurBrowserClient:
                 # option more than once, so counting elements reports a single
                 # unambiguous choice as a conflict.
                 distinct = {labels[i][1] for i in loose}
+                distinct_exact = {labels[i][1] for i in exact}
+                if len(distinct_exact) > 1:
+                    # A prefix can match more than one option ("Software" also
+                    # prefixes "Software Maintenance"). Picking the first would
+                    # silently write a type nobody asked for.
+                    page.keyboard.press("Escape")
+                    matched = ", ".join(repr(t) for t in sorted(distinct_exact)[:4])
+                    return (f"{label} {value!r} is ambiguous -- it prefixes "
+                            f"{len(distinct_exact)} options ({matched})")
                 if exact:
                     chosen = exact[0]
                 elif len(distinct) == 1:
