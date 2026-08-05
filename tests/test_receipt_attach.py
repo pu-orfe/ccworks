@@ -225,6 +225,56 @@ class TestIndexTargeting(ReceiptAttachTestCase):
         self.assertIsNone(got[self.ROW_DUP_C], "row 3 must be untouched")
 
 
+class TestClearingViaApplyJson(ReceiptAttachTestCase):
+    """Teardown semantics: "" clears, an omitted key leaves alone.
+
+    Needed for an end-to-end verification that starts from a blank report, and
+    it is the same convention the text fields already use -- a receipt key that
+    is present but empty means detach, not "no receipt requested".
+    """
+
+    REPORT = "RECEIPTS clearing"
+
+    def setUp(self):
+        self.make_report(self.REPORT)
+
+    def test_empty_receipt_path_detaches(self):
+        self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_A, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "receipt_file_path": self.pdf("to_remove.pdf"),
+        }])
+        self.assertEqual("to_remove.pdf", self.receipts(self.REPORT)[self.ROW_DUP_A],
+                         "precondition: a receipt is attached")
+
+        res = self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_A, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "receipt_file_path": "",
+        }])
+        self.assertTrue(res["results"][0]["success"], res["results"][0])
+        self.assertIsNone(self.receipts(self.REPORT)[self.ROW_DUP_A],
+                          "an empty receipt path must detach the receipt")
+
+    def test_detaching_a_row_with_no_receipt_is_a_no_op(self):
+        res = self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_B, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "receipt_file_path": "",
+        }])
+        self.assertTrue(res["results"][0]["success"],
+                        f"clearing an empty row should be a no-op, got {res['results'][0]}")
+
+    def test_omitting_the_key_leaves_the_receipt_alone(self):
+        self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_C, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "receipt_file_path": self.pdf("keep.pdf"),
+        }])
+        self.apply(self.REPORT, [{
+            "index": self.ROW_DUP_C, "vendor": "ESHIPGLOBAL INC", "amount": "$23.28",
+            "business_purpose": "text only",
+        }])
+        self.assertEqual("keep.pdf", self.receipts(self.REPORT)[self.ROW_DUP_C],
+                         "a write that never mentions the receipt must not disturb it")
+
+
 class TestReplaceExistingReceipt(ReceiptAttachTestCase):
     REPORT = "RECEIPTS replace existing"
 

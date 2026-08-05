@@ -136,6 +136,7 @@ _COMMAND_MAP = {
     ("txn", "update"): "update-transaction",
     ("txn", "allocations"): "allocations",
     ("txn", "unallocate"): "unallocate",
+    ("txn", "detach-receipt"): "detach-receipt",
     ("txn", "allocate"): "add-allocation",
     ("txn", "attach-receipt"): "attach-receipt",
     ("card", "list"): "list-cards",
@@ -356,6 +357,11 @@ def build_parser():
                                help="Clear every allocation on a transaction")
     t_unalloc.add_argument("report_name", type=str, help="Name of the expense report")
     t_unalloc.add_argument("index", type=int, help="1-based index of the transaction row")
+
+    t_detach = txn.add_parser("detach-receipt",
+                              help="Remove the receipt from a transaction")
+    t_detach.add_argument("report_name", type=str, help="Name of the expense report")
+    t_detach.add_argument("index", type=int, help="1-based index of the transaction row")
 
     t_attach = txn.add_parser("attach-receipt", help="Attach a receipt file to a transaction")
     t_attach.add_argument("report_name", type=str,
@@ -990,6 +996,28 @@ def run_tests():
         # ----------------------------------------------------
         # Flow J3: Add Allocation
         # ----------------------------------------------------
+        elif args.command == "detach-receipt":
+            try:
+                with Spinner(f"Detaching receipt from index {args.index} in "
+                             f"'{args.report_name}'..."):
+                    browser_client = ConcurBrowserClient()
+                    res = browser_client.detach_transaction_receipt(
+                        report_name=args.report_name,
+                        transaction_index=args.index,
+                        headless=True,
+                    )
+                if res.get("success"):
+                    summary = (f"\n[SUCCESS] Receipt detached from index {args.index}.\n"
+                               + "=" * 60)
+                else:
+                    summary = (f"\n[FAILED] Could not detach receipt from index "
+                               f"{args.index}: {res.get('error')}\n" + "=" * 60)
+                output_result(res, summary)
+            except ConcurSessionExpiredError as e:
+                handle_session_expired(e)
+            except Exception as e:
+                print(json.dumps({"status": "error", "message": str(e)}))
+
         elif args.command == "unallocate":
             try:
                 with Spinner(f"Clearing allocations on index {args.index} in "
