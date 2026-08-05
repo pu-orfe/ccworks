@@ -1833,26 +1833,44 @@ class ConcurBrowserClient:
                              f"(found {len(valid_rows)} rows).")
         row = valid_rows[transaction_index]
 
-        actions_btn = row.locator("[data-nui-widgets='menu-button-trigger'], "
-                                  ".entries-list-actions-button, "
-                                  "[aria-label='Actions']").first
-        if actions_btn.count() == 0:
-            raise RuntimeError("Could not find 'Actions' button for transaction.")
-        actions_btn.click(force=True)
-        page.wait_for_timeout(1000)
+        ALLOCATE_ITEM = (".menu-item:has-text('Allocate'), "
+                         ".sapMMenuItemText:has-text('Allocate'), "
+                         "[role='menuitem']:has-text('Allocate')")
 
-        # Scope to the visible menu. Every row's menu can exist in the DOM, so a
-        # page-wide `.first` resolves to another row's hidden item and the click
-        # waits forever on something that will never be visible.
-        allocate_item = page.locator(".menu-item:has-text('Allocate'), "
-                                     ".sapMMenuItemText:has-text('Allocate'), "
-                                     "[role='menuitem']:has-text('Allocate')"
-                                     ).filter(visible=True).first
-        if allocate_item.count() == 0:
-            raise RuntimeError("Could not find a visible 'Allocate' menu item.")
-        allocate_item.click()
-        page.wait_for_timeout(2000)
-        return row
+        # Retry the kebab and *wait* for the menu item rather than checking once
+        # after a fixed delay. Called straight after saving an expense pane the
+        # grid is still re-rendering, so a single 1s wait found no menu and gave
+        # up -- which failed every row of a combined write while the standalone
+        # command, which opens the report fresh, worked fine.
+        last_err = "Could not find 'Actions' button for transaction."
+        for attempt in range(3):
+            rows_now, _ = self._collect_expense_rows(page, report_name)
+            if transaction_index >= len(rows_now):
+                break
+            row = rows_now[transaction_index]
+            actions_btn = row.locator("[data-nui-widgets='menu-button-trigger'], "
+                                      ".entries-list-actions-button, "
+                                      "[aria-label='Actions']").first
+            if actions_btn.count() == 0:
+                page.wait_for_timeout(1500)
+                continue
+            actions_btn.click(force=True)
+            try:
+                # Wait on the first *visible* match, not the first match. Every
+                # row's menu can exist in the DOM, so `wait_for_selector` settles
+                # on another row's hidden item and times out even once this row's
+                # menu has rendered.
+                item = page.locator(ALLOCATE_ITEM).filter(visible=True).first
+                item.wait_for(state="visible", timeout=4000)
+            except Exception as exc:
+                last_err = f"Could not find a visible 'Allocate' menu item ({exc!r})"
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(1200)
+                continue
+            item.click()
+            page.wait_for_timeout(2000)
+            return row
+        raise RuntimeError(last_err)
 
     def _read_allocations_from_modal(self, page):
         """Text of each allocation row in the open modal.
@@ -4112,12 +4130,68 @@ class ConcurBrowserClient:
         rows, _ = self._collect_expense_rows(page)
         return rows
 
-    def apply_json_updates(self, report_name: str, expenses: list, headless: bool = True) -> dict:
+    # Measured against a live 16-row statement: text + receipt + save is about
+    # 10s, and an allocation (clear and add, each verified against a fresh read)
+    # about 103s. Rows without an allocation are therefore far cheaper, so the
+    # estimate is per-row rather than a flat figure.
+    SECONDS_PER_ROW = 12
+    SECONDS_PER_ALLOCATION = 105
+
+    def _estimate_seconds(self, expenses):
+        """Rough wall-clock estimate for an apply-json payload."""
+        total = 0
+        for exp in expenses:
+            total += self.SECONDS_PER_ROW
+            if "allocation" in exp:
+                total += self.SECONDS_PER_ALLOCATION
+        return total
+
+    def _session_minutes_left(self):
+        """Minutes until the saved Concur JWT expires, or None if unknown."""
+        saved = self._saved_jwt_expiry()
+        if not saved:
+            return None
+        _, mins = saved
+        return mins
+
+    def apply_json_updates(self, report_name: str, expenses: list, headless: bool = True,
+                           ignore_session_budget: bool = False) -> dict:
         """
         Applies a list of custom transaction updates (e.g. from an edited JSON file)
         to a draft report in a single, high-performance browser session.
         """
         logger.info(f"Applying custom JSON updates to report '{report_name}' (headless={headless})...")
+
+        # Concur's JWT lasts about 60 minutes from login and is not refreshed by
+        # use, so a long payload can outlive it. Refuse up front rather than
+        # spending twenty minutes to die partway.
+        estimate = self._estimate_seconds(expenses)
+        minutes_left = self._session_minutes_left()
+        if (minutes_left is not None and not ignore_session_budget
+                and estimate / 60.0 > minutes_left):
+            fits = 0
+            spent = 0
+            for exp in expenses:
+                cost = self.SECONDS_PER_ROW + (
+                    self.SECONDS_PER_ALLOCATION if "allocation" in exp else 0)
+                if (spent + cost) / 60.0 > minutes_left:
+                    break
+                spent += cost
+                fits += 1
+            return {
+                "success": False,
+                "error": (
+                    f"This payload needs about {estimate/60:.0f} min and the Concur "
+                    f"session has {minutes_left:.0f} min left. Roughly {fits} of "
+                    f"{len(expenses)} row(s) would finish. Re-run "
+                    f"`ccworks session login` first, split the payload, or pass "
+                    f"--ignore-session-budget to try anyway."
+                ),
+                "estimated_minutes": round(estimate / 60.0, 1),
+                "session_minutes_left": round(minutes_left, 1),
+                "rows_that_would_fit": fits,
+                "results": [],
+            }
         results = []
         with self._browser_page(headless=headless) as page:
             try:
@@ -4164,6 +4238,32 @@ class ConcurBrowserClient:
                     # 0-based offset into a differently-filtered list, so a
                     # `report show` -> edit -> `apply-json` round-trip could write
                     # each change to the wrong expense.
+                    # Stop cleanly while there is still session left, rather than
+                    # failing mid-row on an expiry. The caller gets the rows that
+                    # did land plus exactly what remains to re-run.
+                    if not ignore_session_budget:
+                        left = self._session_minutes_left()
+                        cost = self.SECONDS_PER_ROW + (
+                            self.SECONDS_PER_ALLOCATION if "allocation" in exp else 0)
+                        if left is not None and left * 60 < cost + 60:
+                            remaining = [e.get("index") for e in
+                                         sorted(expenses, key=lambda e: e.get("index", 0))
+                                         [row_ordinal:]]
+                            logger.warning(
+                                f"Stopping before row {exp.get('index')}: about "
+                                f"{left:.0f} min of session left, this row needs "
+                                f"{cost/60:.1f} min.")
+                            return {
+                                "success": False,
+                                "stopped_early": True,
+                                "reason": (f"Concur session has about {left:.0f} min left, "
+                                           f"too little for the next row. Re-run "
+                                           f"`ccworks session login`, then apply a payload "
+                                           f"containing only the remaining rows."),
+                                "remaining_indices": remaining,
+                                "results": results,
+                            }
+
                     idx = exp.get("index")
                     if idx is None or idx < 1 or idx > len(valid_rows):
                         logger.warning(f"Index {idx} is out of bounds. Skipping.")

@@ -240,6 +240,31 @@ class TestTransactionAllocations(unittest.TestCase):
             self.report_name, 0, headless=True)["allocations"]
         self.assertEqual([], rows, f"allocations should be cleared, got {rows}")
 
+    def test_02j_allocation_survives_a_freshly_saved_pane(self):
+        """The bug an end-to-end run found that nothing else could.
+
+        Allocating straight after saving an expense pane catches the grid still
+        re-rendering, so the row kebab opens before its menu items exist.
+        Production checked once after a fixed 1s wait and gave up -- failing all
+        sixteen rows of a combined write -- while the standalone command, which
+        opens the report fresh with nothing settling, worked fine. The mock now
+        delays its menu contents after a save to reproduce that.
+        """
+        res = self.client.apply_json_updates(
+            report_name=self.report_name,
+            expenses=[{
+                "index": 1, "vendor": "Uber", "amount": "$24.50",
+                # A field write forces a save, and the save is what leaves the
+                # grid mid-render when the allocation starts.
+                "business_purpose": "written before allocating",
+                "allocation": {"dept": DEPT, "fund": FUND},
+            }],
+            headless=True)
+        row = res["results"][0]
+        self.assertTrue(row["success"],
+                        f"allocation must survive the post-save re-render, got {row}")
+        self.assertIn(DEPT, row.get("allocation_verified", []))
+
     def test_03_out_of_range_index_is_refused(self):
         """Runs without the allocation UI: the bounds check precedes the kebab click.
 

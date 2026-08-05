@@ -204,6 +204,27 @@ Allocate last because editing any field on an allocated expense makes Concur ask
 "Update Other Items?" before it will commit — ccworks answers it, but every
 later write then pays for the extra round trip.
 
+### How long a pass takes
+
+Measured against a live 16-row statement, per transaction:
+
+| Work | Cost |
+|---|---|
+| Business purpose, comment, receipt, save | ~10s |
+| Allocation (clear then add, each verified) | ~103s |
+| **Full treatment** | **~113s** |
+
+So a 16-row statement is roughly **30 minutes** for everything, or about **3
+minutes** if you are only writing text and receipts. Allocation dominates
+because clearing and adding each verify against a fresh reload of the report.
+
+That matters because Concur's session lasts about 60 minutes from login and is
+**not** extended by use. One full pass fits; a teardown *and* a re-apply does
+not. `report apply-json` estimates the payload against `session status`'s
+`expires_in_minutes` and refuses up front rather than dying partway, and stops
+cleanly with `remaining_indices` if the session runs short mid-run. Pass
+`--ignore-session-budget` to override.
+
 **6. Verify, then submit.**
 
 ```bash

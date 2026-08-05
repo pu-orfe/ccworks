@@ -321,6 +321,11 @@ def build_parser():
     r_apply.add_argument("--include-incomplete", action="store_true",
                          help="Also write rows listed in extraction.deep_scan_failures, whose "
                               "captured fields are known to be incomplete (default: skip them)")
+    r_apply.add_argument("--ignore-session-budget", action="store_true",
+                         help="Start even when the Concur session looks too short to "
+                              "finish. Without this, a payload that cannot complete is "
+                              "refused up front, and a run stops cleanly before the "
+                              "session expires rather than failing mid-row")
     r_apply.add_argument("--headed", action="store_true",
                          help="Run the browser visibly rather than headlessly, to watch what "
                               "a write actually does in Concur. Diagnostic only: the write "
@@ -1458,7 +1463,10 @@ def run_tests():
                 mode = "headlessly" if headless else "in a visible browser"
                 with Spinner(f"Applying JSON updates to report '{report_name_val}' {mode}..."):
                     browser_client = ConcurBrowserClient()
-                    res = browser_client.apply_json_updates(report_name=report_name_val, expenses=expenses, headless=headless)
+                    res = browser_client.apply_json_updates(
+                        report_name=report_name_val, expenses=expenses,
+                        headless=headless,
+                        ignore_session_budget=args.ignore_session_budget)
                 
                 summary = f"\n[SUCCESS] Custom JSON updates successfully applied to Concur!\n"
                 summary += "=" * 60

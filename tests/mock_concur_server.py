@@ -511,9 +511,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         };
         let allocIdx = -1, allocDraft = {}, allocActiveField = null;
 
+        // The grid is still re-rendering just after an expense pane is saved, so
+        // the row menu's contents are not there the instant the kebab is clicked.
+        // Production checked once after a fixed 1s wait and gave up, which failed
+        // every row of a combined write while the standalone command -- which
+        // opens the report fresh -- worked. The delay below reproduces that.
+        let menuSettleUntil = 0;
+
+        function delayRowMenus(ms) {
+            menuSettleUntil = Date.now() + ms;
+        }
+
         function toggleRowMenu(idx) {
             const m = document.getElementById(`row-menu-${idx}`);
-            if (m) m.style.display = m.style.display === 'block' ? 'none' : 'block';
+            if (!m) return;
+            const wait = Math.max(0, menuSettleUntil - Date.now());
+            if (wait > 0) {
+                // Opens, but empty, exactly as the live grid behaves mid-render.
+                m.style.display = 'block';
+                const items = m.querySelectorAll('[role="menuitem"]');
+                items.forEach(i => { i.style.display = 'none'; });
+                setTimeout(() => items.forEach(i => { i.style.display = ''; }), wait);
+                return;
+            }
+            m.querySelectorAll('[role="menuitem"]').forEach(i => { i.style.display = ''; });
+            m.style.display = m.style.display === 'block' ? 'none' : 'block';
         }
 
         function openAllocations(idx) {
@@ -941,6 +963,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (updatedReport) {
                 showReportDetails(updatedReport);
             }
+            delayRowMenus(1800);
             closeTransactionDetail();
         }
 
