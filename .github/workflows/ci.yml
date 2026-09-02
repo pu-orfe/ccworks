@@ -37,7 +37,7 @@ jobs:
         CCWORKS_SKIP_BROWSER_BOOTSTRAP: "1"
       run: |
         # Only run the pure unit tests to avoid Playwright dependency issues
-        python -m unittest tests/test_client.py tests/test_launcher_dispatch.py tests/test_cli_surface.py
+        python -m unittest tests/test_client.py tests/test_launcher_dispatch.py tests/test_cli_surface.py tests/test_browser_bootstrap.py
 
   docker-tests:
     runs-on: ubuntu-latest
